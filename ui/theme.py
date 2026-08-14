@@ -48,6 +48,16 @@ class Palette:
     critical: str = "#d03b3b"
     seq_low: str = "#bee2d5"
     seq_high: str = "#033a26"
+    # Eight categorical slots, assigned in this fixed order and never cycled.
+    # The Inflation tab's composition stack is the only chart here that needs
+    # more than three identities. Validated as a set in both modes on the
+    # adjacent pairlist, which is the one that governs stacks, bars and lines:
+    #   light  worst adjacent CVD dE 9.1, normal-vision 19.6   ALL CHECKS PASS
+    #   dark   worst adjacent CVD dE 8.4, normal-vision 19.3   ALL CHECKS PASS
+    # Light mode returns a contrast WARN on three slots, which obligates relief
+    # rather than being dismissable -- hence the legend and the per-segment
+    # hover readout on every chart that uses them.
+    categorical: tuple[str, ...] = ()
 
 
 LIGHT = Palette(
@@ -61,6 +71,8 @@ LIGHT = Palette(
     # the original 4.1:1, so a glance at either tip of the line reads as
     # unambiguously different rather than two shades of the same green.
     seq_low="#bee2d5", seq_high="#033a26",
+    categorical=("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                 "#e87ba4", "#008300", "#4a3aa7", "#e34948"),
 )
 
 DARK = Palette(
@@ -75,6 +87,8 @@ DARK = Palette(
     # itself for the same reason as light theme's dark end -- endpoint
     # contrast goes from 4.3:1 to 6.1:1.
     seq_low="#21634d", seq_high="#bdfae5",
+    categorical=("#3987e5", "#d95926", "#199e70", "#c98500",
+                 "#d55181", "#008300", "#9085e9", "#e66767"),
 )
 
 

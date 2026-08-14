@@ -26,6 +26,7 @@ import streamlit as st
 from core import bbsw as bbswmod
 from core import employment as empmod
 from core import contracts, econ_calendar, model, montecarlo, pricing, rba_calendar
+from core import inflation as infl
 from core import sizing as sizingmod
 from core import strip as stripmod
 from data import abs as absmod
@@ -42,6 +43,11 @@ C.inject_css()
 
 P = active_palette()
 TODAY = date.today()
+
+# The composition buckets and the cyclical split are analytical judgements, not
+# published series, so they live beside the roster and the calendar as data a
+# user can edit rather than as constants in the code.
+CLASSIFICATION_PATH = ROOT / "meetings" / "_cpi_classification.json"
 
 
 # ------------------------------------------------------------------ data
@@ -170,6 +176,64 @@ def abs_series() -> dict[str, list]:
         "_periods": [absmod.latest_release(absmod.LF_LANDING) or "",
                      absmod.latest_release(absmod.LFD_LANDING) or ""],
     }
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS CPI workbooks…")
+def cpi_series() -> dict:
+    """Every CPI series the Inflation tab draws, resolved in one call.
+
+    All the ingestion lives here rather than in the section that renders, for
+    the same reason the labour workbooks do: three multi-megabyte Excel files
+    behind one `@st.cache_data`, so a rerun costs nothing and the Data tab has
+    a single place to report what was fetched and a single thing to clear.
+
+    The hierarchy is resolved here too. It is not a chart -- it is the list of
+    87 expenditure classes that four of the five charts count over, and
+    deriving it once means the breadth count, the composition stack and the
+    cycle split are all measuring the same basket.
+    """
+    idx, order = absmod.cpi_class_indexes()
+    contrib, _ = absmod.cpi_contributions()
+    sa = absmod.cpi_class_indexes_sa()
+
+    pairs = lambda obs: [(o.date, o.value) for o in obs]
+    panel = {k: pairs(v) for k, v in contrib.items()}
+    tree = infl.build_tree(order, panel)
+
+    at = infl.latest_common({k: v for k, v in panel.items()}) if panel else None
+    flat = {k: dict(v)[at] for k, v in panel.items() if at and at in dict(v)}
+    leaves = [n for n in tree.leaves if n in sa]
+    classes = {n: pairs(sa[n]) for n in leaves}
+    weights = infl.index_point_contributions(classes, flat, at) if at else {}
+
+    qtr = absmod.cpi_quarterly_analytical()
+    qtr_yr = absmod.cpi_quarterly_analytical(
+        "Percentage Change from Corresponding Quarter of Previous Year")
+    mth = absmod.cpi_monthly_analytical()
+
+    return {
+        "order": order,
+        "children": tree.children,
+        "leaves": leaves,
+        "contribution": flat,
+        "as_at": at,
+        "residual": infl.reconciles(tree, flat) if flat else None,
+        "classes": classes,
+        "weights": weights,
+        "n_classes_total": len(sa),
+        "trimmed_q": pairs(qtr.get(absmod.TRIMMED_MEAN, [])),
+        "trimmed_yr": pairs(qtr_yr.get(absmod.TRIMMED_MEAN, [])),
+        "headline_q": pairs(qtr.get(absmod.ALL_GROUPS_SA, [])),
+        "monthly_trimmed_yr": pairs(mth.get(absmod.TRIMMED_MEAN, [])),
+        "monthly_ex_volatiles_yr": pairs(mth.get(absmod.EX_VOLATILES, [])),
+        "period": absmod.latest_release(absmod.CPI_LANDING) or "",
+    }
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def cpi_classification() -> tuple[list, list]:
+    """The two editable analytical splits, off disk."""
+    return infl.load_classification(str(CLASSIFICATION_PATH))
 
 
 def kill_series_values() -> tuple[dict, dict]:
@@ -424,7 +488,7 @@ LEFT, RIGHT = st.columns([1, 0.34], gap="large")
 # ------------------------------------------------------------------ working
 
 SECTIONS = ["Pricing", "Curve", "Sensitivity & size", "Path & kills",
-            "Labour", "Vote count", "Data"]
+            "Labour", "Inflation", "Vote count", "Data"]
 
 with LEFT:
     st.markdown(f"### {M.label} — RBA Monetary Policy Board")
@@ -1013,7 +1077,131 @@ with LEFT:
             st.caption("Not scored: " + ", ".join(
                 f"{r.indicator.label} ({r.error})" for r in panel.missing))
 
-    # ------------------------------------------------------- 5. Vote count
+    # -------------------------------------------------------- 5. Inflation
+    elif section == "Inflation":
+        C.section("Inflation",
+                  "Five readings of one CPI. The headline is the target; "
+                  "these say whether it is a monetary problem.")
+        cpi = cpi_series()
+        buckets, cyclical = cpi_classification()
+        # The vintage line answers the two questions a pre-meeting reader has:
+        # which quarter am I looking at, and when does it stop being the latest
+        # word. The next date comes off the same rule-derived calendar the
+        # Monte Carlo prices release days from.
+        _next_cpi = next((e.when for e in econ_calendar.recurring_events(
+            TODAY, TODAY + timedelta(days=200))
+            if e.release == econ_calendar.CPI_Q), None)
+        vintage = charts.Vintage(next_release=_next_cpi,
+                                 last_modified=cpi["as_at"])
+
+        if not cpi["leaves"]:
+            st.warning("No CPI data. The ABS workbooks did not download — the "
+                       "Data tab has the detail and a refresh button.")
+        else:
+            n_leaf = len(cpi["leaves"])
+            resid = cpi["residual"]
+            st.caption(
+                f"{n_leaf} expenditure classes, recovered from the ABS "
+                f"contribution hierarchy at {cpi['as_at']:%b %Y} "
+                f"(residual {resid:+.2f} index points of "
+                f"{cpi['contribution'].get('All groups CPI', 0):.2f}). "
+                "Weights are the latest published basket held fixed back "
+                "through history."
+            )
+
+            start = st.slider("History from", 1990, 2020,
+                              value=1990, step=1, format="%d",
+                              help="Start year for the two breadth charts. "
+                                   "Drag to 2013 for the published window on "
+                                   "the left-hand chart.")
+            start_d = date(start, 1, 1)
+
+            classes, weights = cpi["classes"], cpi["weights"]
+
+            # Row 1 -- how much of the basket is hot, and what is doing it.
+            r1a, r1b = st.columns(2, gap="medium")
+            with r1a:
+                pts = infl.breadth(classes, weights, infl.ABOVE_BAND, 1)
+                st.altair_chart(
+                    charts.cpi_above_threshold(pts, P, infl.ABOVE_BAND,
+                                               start_d, vintage),
+                    use_container_width=True)
+            with r1b:
+                if not buckets:
+                    st.info("No bucket classification — see "
+                            "`meetings/_cpi_classification.json`.")
+                else:
+                    grouped = infl.bucket_contributions(weights, buckets,
+                                                        cpi["leaves"])
+                    pp = infl.contribution_to_change(
+                        grouped, infl.sub_index(weights, cpi["leaves"]))
+                    order = [b.name for b in buckets]
+                    if any(pp.get(infl.RESIDUAL)):
+                        order.append(infl.RESIDUAL)
+                    st.altair_chart(
+                        charts.cpi_composition(pp, cpi["headline_q"], order, P,
+                                               date(2015, 1, 1), vintage),
+                        use_container_width=True)
+
+            # Row 2 -- the measures the Board actually targets, and breadth
+            # against the trimmed mean over the full history.
+            r2a, r2b = st.columns(2, gap="medium")
+            with r2a:
+                q = "Quarterly trimmed mean CPI"
+                m = "Monthly trimmed mean CPI"
+                x = "Monthly CPI ex volatiles and holiday travel"
+                st.altair_chart(
+                    charts.cpi_underlying(
+                        {q: cpi["trimmed_yr"], m: cpi["monthly_trimmed_yr"],
+                         x: cpi["monthly_ex_volatiles_yr"]},
+                        [q, m, x], P, date(2018, 1, 1), vintage),
+                    use_container_width=True)
+            with r2b:
+                wide = infl.breadth(classes, weights, infl.ABOVE_MIDPOINT, 1)
+                share = [(pt.when, pt.share_by_weight) for pt in wide]
+                lo, hi = date(1993, 1, 1), date(2019, 12, 31)
+                st.altair_chart(
+                    charts.cpi_breadth(
+                        share, cpi["trimmed_q"],
+                        infl.mean_over(share, lo, hi),
+                        infl.mean_over(cpi["trimmed_q"], lo, hi),
+                        "1993–2019", P, start_d, vintage),
+                    use_container_width=True)
+
+            # Row 3 -- the classification worth arguing with, on its own row so
+            # the caveat under it is readable rather than squeezed.
+            r3a, r3b = st.columns(2, gap="medium")
+            with r3a:
+                if not cyclical:
+                    st.info("No cyclical classification — see "
+                            "`meetings/_cpi_classification.json`.")
+                else:
+                    split = infl.cycle_split(weights, cyclical, cpi["leaves"])
+                    st.altair_chart(
+                        charts.cpi_cycle(split, P, date(2010, 1, 1), vintage),
+                        use_container_width=True)
+            with r3b:
+                st.markdown(
+                    "**What is a judgement here, and what is not.**\n\n"
+                    "The breadth counts and the underlying measures are "
+                    "arithmetic — a threshold, a count, a weight, and the "
+                    "ABS's own trim. Nothing to argue with.\n\n"
+                    "The composition buckets and the cyclical split are "
+                    "**not published series**. They are analytical "
+                    "classifications, different houses draw them differently, "
+                    "and they live in `meetings/_cpi_classification.json` as "
+                    "data you can edit. Any class no bucket claims lands in a "
+                    "residual rather than disappearing, so a gap shows up as "
+                    "a fat *Other* instead of a quietly short bar.")
+                st.caption(
+                    "Quarterly series are seasonally adjusted (ABS Appendix "
+                    "1a); the monthly measures start in 2024 because the "
+                    "complete monthly CPI does. The breadth chart is drawn as "
+                    "two stacked panels rather than the source's dual axis — "
+                    "with two y-scales the crossings are an artefact of where "
+                    "the axes were pinned.")
+
+    # ------------------------------------------------------- 6. Vote count
     elif section == "Vote count":
         C.section("Vote arithmetic", "A bloc of dissenters is not a decision.")
         a = M.arithmetic
@@ -1081,7 +1269,8 @@ with LEFT:
             # Both layers, or nothing actually refetches: the Streamlit memo in
             # front, the disk cache and the in-process table memo behind it.
             for fn in (fetch_ib, fetch_ir, fetch_rba_table, rba_spot, bbsw_history,
-                       kill_series_history, policy_changes, abs_series):
+                       kill_series_history, policy_changes, abs_series,
+                       cpi_series, cpi_classification):
                 fn.clear()
             rba._table_memo.cache_clear()
             absmod.latest_release.cache_clear()
@@ -1107,6 +1296,14 @@ with LEFT:
             "ABS Labour Force (Excel time series)", _abs_ok,
             f"headline release {_lf_period or 'unknown'}, detailed release "
             f"{_lfd_period or 'unknown'}." if _abs_ok else "unavailable", P)
+
+        _cpi = cpi_series()
+        _cpi_ok = bool(_cpi.get("leaves"))
+        C.data_source_header(
+            "ABS Consumer Price Index (Excel time series)", _cpi_ok,
+            f"release {_cpi['period'] or 'unknown'}, {len(_cpi['leaves'])} "
+            f"expenditure classes at {_cpi['as_at']:%b %Y}."
+            if _cpi_ok else "unavailable", P)
 
         C.note(
             "No API key is needed for either source, which is a real difference from the US "
@@ -1165,6 +1362,47 @@ with LEFT:
             "after the April 2026 survey changes. `data.abs` reads both periods off the "
             "ABS landing pages rather than deriving them from today's date, because a "
             "hardcoded path rots every month and the two would drift apart silently.")
+
+        st.divider()
+        C.section("ABS CPI series",
+                  "What the Inflation tab is built from, and the hierarchy it "
+                  "recovers from them.")
+        if not _cpi_ok:
+            st.caption("The CPI workbooks did not download.")
+        else:
+            _root = _cpi["contribution"].get("All groups CPI")
+            C.table(["Series", "Observations", "From", "To"],
+                    [[label, f"{len(v):,}", f"{v[0][0]:%b %Y}", f"{v[-1][0]:%b %Y}"]
+                     for label, v in [
+                         ("Expenditure classes, quarterly SA",
+                          next(iter(_cpi["classes"].values()), [])),
+                         ("Trimmed mean, % q/q", _cpi["trimmed_q"]),
+                         ("Trimmed mean, year-ended", _cpi["trimmed_yr"]),
+                         ("All groups SA, % q/q", _cpi["headline_q"]),
+                         ("Trimmed mean, monthly year-ended",
+                          _cpi["monthly_trimmed_yr"]),
+                         ("Ex volatiles and holiday travel, monthly",
+                          _cpi["monthly_ex_volatiles_yr"])] if v],
+                    numeric=(1,))
+            st.caption(
+                f"Hierarchy: {len(_cpi['order'])} series in the workbook resolve "
+                f"to {len(_cpi['leaves'])} expenditure classes and "
+                f"{len(_cpi['order']) - len(_cpi['leaves'])} aggregates. Leaf "
+                f"contributions sum to {(_root or 0) + (_cpi['residual'] or 0):.2f} "
+                f"against a published All groups CPI of {_root:.2f} — a residual "
+                f"of {_cpi['residual']:+.2f} index points, which is the ABS's own "
+                f"rounding.")
+            with st.expander(f"The {len(_cpi['leaves'])} expenditure classes"):
+                st.caption(", ".join(_cpi["leaves"]))
+        C.note(
+            "The classes are **not a hardcoded list**. The ABS flattens four "
+            "levels of hierarchy into one ordered column block with nothing "
+            "marking depth, so counting every series would count Bread once on "
+            "its own and again inside Bread and cereal products. `core.inflation` "
+            "recovers the tree from the contributions instead — a parent's "
+            "contribution is the sum of its children's — which self-corrects "
+            "when the ABS moves a class, as the April 2026 Labour Force renaming "
+            "is a live reminder they do.")
 
         st.divider()
         C.section("Releases between now and the decision")

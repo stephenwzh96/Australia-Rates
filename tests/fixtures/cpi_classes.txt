@@ -1,0 +1,87 @@
+Bread
+Cakes and biscuits
+Breakfast cereals
+Other cereal products
+Beef and veal
+Pork
+Lamb and goat
+Poultry
+Other meats
+Fish and other seafood
+Milk
+Cheese
+Ice cream and other dairy products
+Fruit
+Vegetables
+Eggs
+Jams, honey and spreads
+Food additives and condiments
+Oils and fats
+Snacks and confectionery
+Other food products n.e.c.
+Coffee, tea and cocoa
+Waters, soft drinks and juices
+Restaurant meals
+Take away and fast foods
+Spirits
+Wine
+Beer
+Tobacco
+Garments for men
+Garments for women
+Garments for infants and children
+Footwear for men
+Footwear for women
+Footwear for infants and children
+Accessories
+Cleaning, repair and hire of clothing and footwear
+Rents
+New dwelling purchase by owner-occupiers
+Maintenance and repair of the dwelling
+Property rates and charges
+Water and sewerage
+Electricity
+Gas and other household fuels
+Furniture
+Carpets and other floor coverings
+Household textiles
+Major household appliances
+Small electric household appliances
+Glassware, tableware and household utensils
+Tools and equipment for house and garden
+Cleaning and maintenance products
+Personal care products
+Other non-durable household products
+Child care
+Hairdressing and personal grooming services
+Other household services
+Pharmaceutical products
+Therapeutic appliances and equipment
+Medical and hospital services
+Dental services
+Motor vehicles
+Spare parts and accessories for motor vehicles
+Automotive fuel
+Maintenance and repair of motor vehicles
+Other services in respect of motor vehicles
+Urban transport fares
+Postal services
+Telecommunication equipment and services
+Audio, visual and computing equipment
+Audio, visual and computing media and services
+Books
+Newspapers, magazines and stationery
+Domestic holiday travel and accommodation
+International holiday travel and accommodation
+Equipment for sports, camping and open-air recreation
+Games, toys and hobbies
+Pets and related products
+Veterinary and other services for pets
+Sports participation
+Other recreational, sporting and cultural services
+Preschool and primary education
+Secondary education
+Tertiary education
+Insurance
+Deposit and loan facilities (direct charges)
+Other financial services

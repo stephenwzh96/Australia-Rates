@@ -197,9 +197,18 @@ def parse_workbook(blob: bytes, period: str = "") -> Workbook:
         except Exception:
             pass
 
-    for obs in columns.values():
-        obs.sort(key=lambda o: o.date)
-    return Workbook(period, {k: v for k, v in columns.items() if v}, ids)
+    # Deduplicate by date. The CPI workbooks publish the SAME series twice when
+    # a sub-group has exactly one expenditure class -- Tobacco, Rents, Household
+    # textiles and 21 others each appear in two columns with identical values
+    # and different series IDs. Concatenating them gave every observation twice,
+    # which a quarterly change reads as a zero-length period.
+    out: dict[tuple[str, str], list[Observation]] = {}
+    for key, obs in columns.items():
+        if not obs:
+            continue
+        merged = {o.date: o.value for o in obs}
+        out[key] = [Observation(d, merged[d]) for d in sorted(merged)]
+    return Workbook(period, out, ids)
 
 
 def _cache_key(fname: str, period: str) -> str:
@@ -301,3 +310,160 @@ def labour_force_rates() -> Workbook:
 def duration_counts() -> Workbook:
     """14a -- unemployed counts by duration of job search. Detailed release."""
     return workbook(DURATION, detailed=True)
+
+
+# --------------------------------------------------------------------------
+# Consumer Price Index
+# --------------------------------------------------------------------------
+
+CPI_LANDING = ("https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/"
+               "consumer-price-index-australia/latest-release")
+CPI_BASE = ("https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/"
+            "consumer-price-index-australia/{period}/{fname}")
+
+# The CPI became a MONTHLY index from the October 2025 reference month, and
+# that split every class-level series in two. Tables 3 and 13 are the monthly
+# successors and start in 2017 and December 2024 respectively -- too short to
+# say anything about how the current episode compares with the pre-pandemic
+# decade. The quarterly history survives in two files, and both are needed.
+#
+# TABLE 18 is the quarterly class table in ORIGINAL terms. It carries index
+# numbers back to 1948 and, for the three most recent quarters only, a
+# `Contribution to Total CPI` at every level of the hierarchy. Three quarters
+# is thin for a time series but it is not being used as one: contributions are
+# additive down the tree, which is what lets `core.inflation` recover the
+# expenditure classes from the data instead of a hardcoded list of group names
+# that would rot at the next ABS restructure. The All groups contribution
+# equals the All groups index exactly, so a contribution is an index point and
+# a class weight falls straight out of it.
+CPI_CLASSES_Q = "6401018.xlsx"
+
+# APPENDIX 1a is the quarterly series the monthly restructure would otherwise
+# have ended: 87 SEASONALLY ADJUSTED expenditure-class indexes -- exactly the
+# leaves the hierarchy parse finds -- plus trimmed mean and weighted median as
+# index, quarterly change and year-ended change, back to 1982. Everything on
+# this tab that is quarterly and seasonally adjusted comes from here.
+CPI_QUARTERLY_SA = "64010Appendix1a.xlsx"
+
+# TABLE 6 is the monthly analytical series -- trimmed mean, weighted median and
+# the ex-volatiles measures. Short history (April 2024 onwards), because the
+# complete monthly CPI is new and the older Monthly CPI Indicator was retired
+# after September 2025.
+CPI_ANALYTICAL_M = "640106.xlsx"
+
+# The measure the published chart calls "ex volatiles, travel & electricity".
+# The ABS stops one term short -- there is no published series that also strips
+# electricity -- so this is the closest real series and it is labelled by its
+# own name on screen rather than by the one it is standing in for.
+EX_VOLATILES = "All groups CPI excluding 'volatile items' and holiday travel"
+TRIMMED_MEAN = "Trimmed Mean"
+WEIGHTED_MEDIAN = "Weighted Median"
+ALL_GROUPS = "All groups CPI"
+ALL_GROUPS_SA = "All groups CPI, seasonally adjusted"
+
+# Appendix 1a keeps the analytical measures on the same tab as the expenditure
+# classes, so the class list has to exclude them by name or the breadth count
+# ends up measuring the trimmed mean against itself.
+_ANALYTICAL = (TRIMMED_MEAN, WEIGHTED_MEDIAN, ALL_GROUPS_SA, ALL_GROUPS)
+
+
+def cpi_workbook(fname: str) -> Workbook:
+    """One CPI workbook, behind the same release-keyed disk cache."""
+    period = latest_release(CPI_LANDING)
+    if period is None:
+        for row in sorted(cache.read_json(f"abs-index-{fname}"), reverse=True,
+                          key=lambda r: r.get("period", "")):
+            cached = _from_cache(_cache_key(fname, row.get("period", "")),
+                                 row.get("period", ""))
+            if cached.ok:
+                return cached
+        return Workbook("", {}, {})
+
+    key = _cache_key(fname, period)
+    cached = _from_cache(key, period)
+    if cached.ok:
+        return cached
+
+    blob = _fetch_workbook(CPI_BASE.format(period=period, fname=fname))
+    if blob is None:
+        return Workbook(period, {}, {})
+    parsed = parse_workbook(blob, period)
+    if parsed.ok:
+        _to_cache(key, parsed)
+        cache.write_json(f"abs-index-{fname}", [{"period": period}])
+    return parsed
+
+
+def _by_name(wb: Workbook, prefix: str, city: str = "Australia"
+             ) -> tuple[dict[str, list[Observation]], list[str]]:
+    """Series under one measure prefix, keyed on the bare series name.
+
+    Also returns the names in WORKBOOK ORDER, which is not decoration: the ABS
+    lists the CPI hierarchy depth-first, and that ordering is the only thing
+    marking which series is a parent of which. Sorting it away, or handing back
+    a dict and trusting insertion order to survive a round trip, would destroy
+    the one signal `core.inflation.build_tree` runs on.
+    """
+    out: dict[str, list[Observation]] = {}
+    order: list[str] = []
+    for (header, _stype), obs in wb.columns.items():
+        if not header.startswith(prefix):
+            continue
+        parts = [p.strip() for p in header.split(";")]
+        if len(parts) < 3 or parts[2] != city or not parts[1] or not obs:
+            continue
+        if parts[1] not in out:
+            order.append(parts[1])
+        out[parts[1]] = obs
+    return out, order
+
+
+def cpi_class_indexes() -> tuple[dict[str, list[Observation]], list[str]]:
+    """Quarterly index numbers at every hierarchy level, original terms.
+
+    Keyed on the bare series name rather than the ABS's full header, because
+    every downstream consumer -- the breadth counters, the cyclical split, the
+    classification file a user edits by hand -- wants to say "Rents", not
+    "Index Numbers ;  Rents ;  Australia ;".
+    """
+    return _by_name(cpi_workbook(CPI_CLASSES_Q), "Index Numbers")
+
+
+def cpi_contributions() -> tuple[dict[str, list[Observation]], list[str]]:
+    """Index-point contributions at every hierarchy level.
+
+    Three quarters deep and additive down the tree. The order that comes back
+    with it is what `core.inflation.build_tree` parses.
+    """
+    return _by_name(cpi_workbook(CPI_CLASSES_Q), "Contribution to Total CPI")
+
+
+def cpi_class_indexes_sa() -> dict[str, list[Observation]]:
+    """Quarterly SEASONALLY ADJUSTED indexes, expenditure classes only.
+
+    87 series, which is the leaf count the hierarchy parse arrives at from the
+    contributions independently -- two different files agreeing on the shape of
+    the basket.
+    """
+    named, _ = _by_name(cpi_workbook(CPI_QUARTERLY_SA), "Index Numbers")
+    return {k: v for k, v in named.items() if k not in _ANALYTICAL}
+
+
+def cpi_quarterly_analytical(measure: str = "Percentage Change from Previous Period"
+                             ) -> dict[str, list[Observation]]:
+    """Quarterly trimmed mean, weighted median and headline, back to 1982.
+
+    `measure` selects the transform the ABS has already published -- index,
+    `Percentage Change from Previous Period`, or `Percentage Change from
+    Corresponding Quarter of Previous Year`. Taken as published rather than
+    derived from the index, because a trimmed mean is re-trimmed each quarter
+    and its year-ended change is not the compounding of its quarterly ones.
+    """
+    return _by_name(cpi_workbook(CPI_QUARTERLY_SA), measure)[0]
+
+
+def cpi_monthly_analytical(measure: str = "Percentage Change from Corresponding "
+                                          "Month of Previous Year"
+                           ) -> dict[str, list[Observation]]:
+    """Monthly trimmed mean and ex-volatiles measures. April 2024 onwards."""
+    return _by_name(cpi_workbook(CPI_ANALYTICAL_M), measure)[0]

@@ -937,3 +937,220 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
     n = len(order)
     return _apply(alt.layer(zero, connectors, dots, awaiting), p,
                   height or max(300, 30 * n))
+
+
+# ---------------------------------------------------------------------------
+# Inflation
+# ---------------------------------------------------------------------------
+# Five readings of one quarterly CPI. Colours are the eight validated
+# categorical slots, taken in slot order per chart and never cycled, so a
+# series keeps its hue when a sibling chart shows a different subset.
+
+_EMPTY = pd.DataFrame({"when": pd.Series([], dtype="datetime64[ns]"),
+                       "value": pd.Series([], dtype="float64"),
+                       "series": pd.Series([], dtype="object")})
+
+
+def _tidy(named: dict[str, list[tuple[date, float]]], order: list[str] | None = None
+          ) -> pd.DataFrame:
+    """`{name: [(date, value)]}` -> long form, in a stated series order."""
+    rows = [{"when": pd.Timestamp(d), "value": float(v), "series": name}
+            for name in (order or list(named))
+            for d, v in named.get(name, [])
+            if v == v]                      # drop NaN rather than plot a gap
+    return pd.DataFrame(rows) if rows else _EMPTY.copy()
+
+
+def _since(df: pd.DataFrame, start: date | None) -> pd.DataFrame:
+    if start is None or df.empty:
+        return df
+    return df[df["when"] >= pd.Timestamp(start)]
+
+
+def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
+           y_format: str = ".1f", zero_rule: bool = False,
+           y_domain: tuple[float, float] | None = None) -> list[alt.Chart]:
+    """A multi-series line chart's layers: optional zero rule, then the lines.
+
+    Legend always on for two or more series, per the accessibility rule that
+    identity is never colour alone; the hover readout names the series too, so
+    a reader who cannot separate two hues still gets the answer.
+    """
+    scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
+    ys = alt.Scale(zero=False) if y_domain is None else alt.Scale(domain=list(y_domain))
+    layers: list[alt.Chart] = []
+    if zero_rule:
+        layers.append(alt.Chart(pd.DataFrame({"y": [0.0]}))
+                      .mark_rule(color=p.baseline, strokeWidth=1)
+                      .encode(y=alt.Y("y:Q")))
+    layers.append(
+        alt.Chart(df).mark_line(strokeWidth=LINE_WIDTH, clip=True).encode(
+            x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+            y=alt.Y("value:Q", scale=ys, axis=alt.Axis(title=y_title, format=y_format)),
+            color=alt.Color("series:N", scale=scale, sort=order,
+                            legend=alt.Legend(title=None, orient="bottom",
+                                              columns=1, labelLimit=320)),
+            tooltip=[alt.Tooltip("series:N", title=""),
+                     alt.Tooltip("when:T", title="quarter", format="%b %Y"),
+                     alt.Tooltip("value:Q", title="per cent", format=".2f")]))
+    return layers
+
+
+def cpi_above_threshold(points, p: Palette, threshold: float = 3.0,
+                        start: date | None = None,
+                        vintage: "Vintage | None" = None,
+                        height: int = 300) -> alt.LayerChart:
+    """Share of the CPI basket inflating faster than `threshold`, two ways.
+
+    The two lines answer different questions and are meant to be read against
+    each other: by count every expenditure class has equal say, so the line
+    measures how WIDESPREAD a price rise is; by weight the classes carry their
+    own share of the basket, so it measures how much of what people actually
+    buy is rising. A gap between them says a few heavy classes are doing the
+    work -- which is the case for treating a high headline as a relative-price
+    story rather than a monetary one.
+    """
+    count, weight = "By number of items", "By weight of price categories"
+    df = _since(_tidy({count: [(pt.when, pt.share_by_count) for pt in points],
+                       weight: [(pt.when, pt.share_by_weight) for pt in points]},
+                      [count, weight]), start)
+    title = vintage_title(
+        f"Share of CPI items with annualised inflation above {threshold:g}%",
+        vintage, p)
+    return _apply(alt.layer(*_lines(df, [count, weight], p, "% of basket"))
+                  .properties(title=title), p, height)
+
+
+def cpi_composition(buckets, cpi_line, order: list[str], p: Palette,
+                    start: date | None = None, vintage: "Vintage | None" = None,
+                    height: int = 300) -> alt.LayerChart:
+    """Quarterly CPI change, split into the buckets that produced it.
+
+    Stacked bars because the parts sum to the whole and the whole is the number
+    the Board reacts to; the CPI line rides on top so the reader can see the
+    stack reconcile to it. Bars carry a 1px surface gap between segments so
+    adjacent fills stay separable where two hues are close.
+    """
+    df = _since(_tidy(buckets, order), start)
+    line = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                                for d, v in cpi_line]) if cpi_line
+                  else _EMPTY.copy()[["when", "value"]], start)
+    scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
+
+    # A fixed bar width rather than Vega's automatic one. Forty-odd quarters in
+    # a half-width column leaves about 8px each, and the surface stroke that
+    # separates stacked segments then eats most of the bar -- at 1px it renders
+    # the stack as a row of hairlines. 6px of fill with a half-pixel edge keeps
+    # both the segment separation and the bar.
+    bars = alt.Chart(df).mark_bar(size=6, stroke=p.surface, strokeWidth=0.5).encode(
+        x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+        y=alt.Y("value:Q", stack="zero",
+                axis=alt.Axis(title="percentage points", format=".1f")),
+        # Legend to the RIGHT, not the bottom. Vega takes a bottom legend's
+        # rows out of the same height budget as the plot, and with seven
+        # buckets that left about 40px of plot -- the stack flattened to a line
+        # and the y-axis dropped its labels. On the side it costs width, which
+        # this chart has more of to give.
+        color=alt.Color("series:N", scale=scale, sort=order,
+                        legend=alt.Legend(title=None, orient="right",
+                                          columns=1, labelLimit=150)),
+        order=alt.Order("series:N", sort="ascending"),
+        tooltip=[alt.Tooltip("series:N", title=""),
+                 alt.Tooltip("when:T", title="quarter", format="%b %Y"),
+                 alt.Tooltip("value:Q", title="pp", format="+.2f")])
+    zero = (alt.Chart(pd.DataFrame({"y": [0.0]}))
+            .mark_rule(color=p.baseline, strokeWidth=1).encode(y=alt.Y("y:Q")))
+    cpi = alt.Chart(line).mark_line(strokeWidth=LINE_WIDTH, color=p.ink).encode(
+        x=alt.X("when:T"), y=alt.Y("value:Q"),
+        tooltip=[alt.Tooltip("when:T", title="quarter", format="%b %Y"),
+                 alt.Tooltip("value:Q", title="CPI, % q/q", format="+.2f")])
+    title = vintage_title("Contributions to CPI inflation — quarterly, "
+                          "seasonally adjusted", vintage, p)
+    return _apply(alt.layer(zero, bars, cpi).properties(title=title), p, height)
+
+
+def cpi_underlying(series: dict[str, list[tuple[date, float]]], order: list[str],
+                   p: Palette, start: date | None = None,
+                   vintage: "Vintage | None" = None,
+                   height: int = 300) -> alt.LayerChart:
+    """Year-ended underlying inflation, quarterly and monthly measures together.
+
+    The monthly series are short by construction -- the ABS only completed the
+    monthly CPI in 2024 -- so they enter part-way across and stop rather than
+    being back-filled from the quarterly ones, which measure a different trim.
+    """
+    df = _since(_tidy(series, order), start)
+    band = (alt.Chart(pd.DataFrame({"lo": [2.0], "hi": [3.0]}))
+            .mark_rect(color=p.grid, opacity=0.45)
+            .encode(y=alt.Y("lo:Q"), y2=alt.Y2("hi:Q")))
+    title = vintage_title("Underlying CPI inflation — year-ended", vintage, p)
+    return _apply(alt.layer(band, *_lines(df, order, p, "%", zero_rule=True))
+                  .properties(title=title), p, height)
+
+
+def cpi_breadth(share, trimmed, share_mean: float | None, trimmed_mean: float | None,
+                mean_label: str, p: Palette, start: date | None = None,
+                vintage: "Vintage | None" = None,
+                height: int = 150) -> alt.VConcatChart:
+    """Breadth of the price rise beside the trimmed mean, on a shared time axis.
+
+    The published version of this chart puts the two on a DUAL AXIS. That is
+    the one construction worth refusing to copy: with two independent y-scales
+    the crossings and the relative amplitudes are artefacts of where the
+    scales were pinned, and sliding one axis changes which series appears to
+    lead. Stacked panels sharing an x-axis answer the same question -- does
+    breadth move with the trimmed mean, and is either above its own pre-COVID
+    norm -- while every comparison stays real. Each panel keeps its own dotted
+    reference line, which the dual-axis version could only draw twice.
+    """
+    def panel(rows, colour, y_title, mean, fmt):
+        df = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                                  for d, v in rows]) if rows
+                    else _EMPTY.copy()[["when", "value"]], start)
+        # The reference value rides in the AXIS TITLE rather than as a floating
+        # label on the rule. A dashed line drawn at a series' own long-run mean
+        # sits, by construction, in the middle of where that series spends its
+        # time, so any label anchored to it lands on top of the data.
+        axis_title = y_title if mean is None else \
+            f"{y_title}  ·  mean {mean:{fmt}}"
+        line = alt.Chart(df).mark_line(strokeWidth=1.5, color=colour).encode(
+            x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+            y=alt.Y("value:Q", scale=alt.Scale(zero=False),
+                    axis=alt.Axis(title=axis_title, format=fmt)),
+            tooltip=[alt.Tooltip("when:T", title="quarter", format="%b %Y"),
+                     alt.Tooltip("value:Q", title=y_title, format=".2f")])
+        layers = [line]
+        if mean is not None:
+            layers.append(alt.Chart(pd.DataFrame({"y": [mean]})).mark_rule(
+                color=p.muted, strokeDash=[4, 3], strokeWidth=1)
+                .encode(y=alt.Y("y:Q")))
+        return alt.layer(*layers).properties(height=height, width="container")
+
+    top = panel(share, p.categorical[1], "% basket > 2.5% ann.", share_mean, ".0f")
+    bottom = panel(trimmed, p.categorical[0], "trimmed mean % q/q",
+                   trimmed_mean, ".2f")
+    title = vintage_title(f"Breadth of CPI inflation — dashed lines are "
+                          f"{mean_label} averages", vintage, p)
+    return _apply(alt.vconcat(top, bottom, spacing=8).properties(title=title),
+                  p, height)
+
+
+def cpi_cycle(split, p: Palette, start: date | None = None,
+              vintage: "Vintage | None" = None,
+              height: int = 300) -> alt.LayerChart:
+    """Year-ended inflation in the cycle-sensitive basket and its complement.
+
+    The split is a judgement, not a measurement, and it is the argument the
+    chart exists to have: if the cyclical line is the one running hot, domestic
+    slack is the binding constraint and the cash rate is the instrument. If the
+    non-cyclical line is doing the work -- an excise schedule, a regulated
+    tariff, a world price -- then it is not, whatever the headline says.
+    """
+    cyc = f"'Cyclical' inflation  ({split.n_cyclical} classes)"
+    non = f"'Non-cyclical' inflation  ({split.n_non_cyclical} classes)"
+    df = _since(_tidy({cyc: split.cyclical, non: split.non_cyclical},
+                      [cyc, non]), start)
+    title = vintage_title("Domestic-cycle sensitive inflation — annual % change",
+                          vintage, p)
+    return _apply(alt.layer(*_lines(df, [cyc, non], p, "%", zero_rule=True))
+                  .properties(title=title), p, height)

@@ -30,6 +30,9 @@ meeting, so a meeting can be bookmarked.
 | RBA table H5 | labour force, unemployment level, job vacancies | no |
 | ABS Labour Force | unemployment, underemployment, youth rates (Excel time series) | no |
 | ABS Labour Force Detailed | unemployed by duration of job search | no |
+| ABS CPI table 18 | quarterly expenditure-class indexes, index-point contributions | no |
+| ABS CPI appendix 1a | 87 seasonally adjusted class indexes, trimmed mean, from 1982 | no |
+| ABS CPI table 6 | monthly trimmed mean and ex-volatiles measures | no |
 
 A failed HTTP call never blocks the Verdict. With both sources dead and no
 cache, every field is still typeable and the pricing, sizing and export all
@@ -148,14 +151,77 @@ indicators overlap heavily (underutilisation is literally unemployment plus
 underemployment) and any weighting would be a second undocumented judgement on
 top of the window choice.
 
-## Not included
+## The Inflation tab
 
-The **Inflation** tab is deliberately absent — different figures are coming.
-**Release prep** and the LLM research agent came out with it. `core/econ_calendar.py` survives in slim form (dates only, no series
-values) because the Monte Carlo's release-day volatility multipliers are keyed
-off it; without it a CPI Wednesday would be priced like a quiet Tuesday. On
-Australian data quarterly CPI comes out at roughly 5x a quiet day — by a wide
-margin the loudest release on the calendar.
+Five readings of one quarterly CPI, two to a row. The headline is what the
+Board targets; these say whether it is a *monetary* problem — a 3% print made
+of two extreme items is a different thing from one where two-thirds of the
+basket is above target, and only the second is something a cash rate fixes.
+
+**The 87 expenditure classes are not a hardcoded list.** The ABS flattens four
+levels of hierarchy — All groups, 11 groups, sub-groups, classes — into one
+ordered column block with nothing marking depth, so counting every series would
+count Bread once on its own and again inside Bread and cereal products. The
+tree is recovered from the data instead: a parent's index-point contribution is
+the sum of its children's, so reading the list backwards and letting each
+series claim the shortest run of unclaimed neighbours that adds up to it
+rebuilds the hierarchy with no external list at all. It self-corrects when the
+ABS moves a class, which the April 2026 Labour Force renaming is a live
+reminder they do.
+
+Two rules make that parse survive contact with real data, and both were forced
+by a specific failure:
+
+- **A parent needs at least two children.** Pork and Lamb and goat both publish
+  0.27, so a greedy parse made Lamb the only child of Pork — and Lamb then
+  disappeared from Meat and seafoods, whose remaining children no longer
+  reached it, so it too was misread, and so on up to All groups CPI. One
+  coincidence four levels down corrupted every boundary above it. A one-child
+  aggregate is arithmetically identical to a leaf anyway, so refusing to infer
+  one costs nothing.
+- **The balance must hold in every published quarter.** Automotive fuel came to
+  3.46 in March 2026 and so did Maintenance and repair plus Other services;
+  in December (3.29 against 3.43) and June (3.39 against 3.51) they are nowhere
+  near each other. A structure is a property of the classification, so a real
+  parent balances in all of them and a coincidence is a fact about one
+  quarter's prices.
+
+The result reconciles: 87 leaves summing to 102.36 index points against a
+published All groups CPI of 102.31, a residual of 0.05 that is the ABS's own
+rounding. That number is on screen, because it is the one figure that says
+whether the parse worked.
+
+**Weights are reconstructed, and the chart says so.** The ABS publishes an
+index-point contribution for the last three quarters only, and the breadth
+charts need a weight for every quarter back to 1990. The All groups
+contribution equals the All groups index exactly, so a contribution *is* an
+index point and dividing by a class's own index recovers its expenditure
+weight. Multiplying that weight back through the index gives its contribution
+at any date — a fixed-weight Laspeyres, not what the ABS would have published
+in 2013, since the basket is re-weighted annually and this holds the latest one
+fixed.
+
+**Two things are judgements, and they live outside the code.** The composition
+buckets (administered prices, tradables, domestic market services) and the
+cyclical/non-cyclical split are not published series — different houses draw
+them differently. They sit in `meetings/_cpi_classification.json` as editable
+data, every class the file does not mention falls into a visible residual
+rather than being dropped, and a test asserts every name in it is a real
+expenditure class and that the two classifications agree with each other.
+
+**The breadth chart is two stacked panels, not the source's dual axis.** With
+two independent y-scales the crossings and relative amplitudes are artefacts of
+where the scales were pinned, and sliding one changes which series appears to
+lead. Sharing an x-axis answers the same question with every comparison real,
+and each panel keeps its own 1993–2019 reference line.
+
+**Release prep** and the LLM research agent are still absent.
+`core/econ_calendar.py` survives in slim form (dates only, no series values)
+because the Monte Carlo's release-day volatility multipliers are keyed off it;
+without it a CPI Wednesday would be priced like a quiet Tuesday. On Australian
+data quarterly CPI comes out at roughly 5x a quiet day — by a wide margin the
+loudest release on the calendar. The Inflation tab's vintage line reads its
+next-release date off that same calendar.
 
 ## Caveats
 
@@ -171,7 +237,7 @@ margin the loudest release on the calendar.
 ## Layout
 
 ```
-app.py                Streamlit entry: sidebar, six sections, Verdict rail
+app.py                Streamlit entry: sidebar, eight sections, Verdict rail
 core/                 Pure calculation -- no Streamlit imports
   pricing.py          Steps 1-5   implied prob, EV, breakeven, sensitivity, Kelly
   strip.py            Step 1a     IB -> per-meeting priced path
@@ -185,13 +251,15 @@ core/                 Pure calculation -- no Streamlit imports
   sizing.py           Step 5      Kelly -> dollars -> lots
   model.py            one computation of everything, shared by app and export
   employment.py       full-employment z-scores, sign conventions, panel
+  inflation.py        CPI hierarchy, breadth, composition, cycle split
 data/asx.py           IB and IR strips, settlement-first
 data/rba.py           statistical tables, keyless CSV
-data/abs.py           ABS Labour Force Excel time series
+data/abs.py           ABS Labour Force and CPI Excel time series
 state/store.py        per-meeting JSON, clone-forward
 ui/                   components, charts, theme, style
 export/report.py      Markdown mirroring the sections
-meetings/             saved state, plus _roster.json and _calendar.json
+meetings/             saved state, plus _roster.json, _calendar.json and
+                      _cpi_classification.json
 tests/                golden values, contract mechanics, feed traps
 ```
 
@@ -204,15 +272,22 @@ a test can call directly.
 .venv/bin/python -m pytest tests -q
 ```
 
-58 tests. Beyond the golden values, they pin the things that had to be
+81 tests. Beyond the golden values, they pin the things that had to be
 re-derived rather than translated: the ACT/365 DV01s, the IB averaging window,
 IR's binary capture and its last-trading-day rule, Anzac Day never substituting
 in NSW, and the strip's refusal to invent a spot rate it cannot recover.
 
-Seven are regressions against bugs this codebase actually had, not
+Eleven are regressions against bugs this codebase actually had, not
 hypotheticals — a circular basis that returned the IB path unchanged, a
 volatility estimate divided by a contract capture that has no meaning for a
 rate series, a bill tenor starting a day early, a negative move size crashing
-the app, a corrupt save file wedging it on every rerun, and stop-path warnings
-nagging about an unfilled form. Each was checked by reintroducing the bug and
-confirming the test fails.
+the app, a corrupt save file wedging it on every rerun, stop-path warnings
+nagging about an unfilled form, Pork adopting Lamb and unpicking the CPI
+hierarchy above it, Automotive fuel doing the same on one quarter's
+coincidence, an aggregate stepping when a class entered mid-series, and free
+child care in June 2020 driving a compounded index to 15,000 per cent. Each was
+checked by reintroducing the bug and confirming the test fails.
+
+The CPI fixtures are cuts of the real June 2026 basket rather than invented
+numbers, because every one of those traps is a fact about the published data
+and an invented fixture would not have caught any of them.
