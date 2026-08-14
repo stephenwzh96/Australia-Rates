@@ -269,6 +269,45 @@ def calendar_meetings() -> list[rba_calendar.Meeting]:
 MEETINGS = calendar_meetings()
 
 
+# The history-window selector, shared by the Labour and Inflation tabs so the
+# two navigate identically. Same options and same default as the FOMC version:
+# one control, one vocabulary, wherever a chart shows recent history.
+HISTORY_WINDOWS = ("1Y", "2Y", "3Y", "5Y", "10Y", "All")
+
+# The Labour panel compares each indicator against an earlier reading. Offered
+# as fixed lookbacks rather than a bare date box for the same reason the window
+# above is: a named span is a decision a reader can repeat, and the published
+# version of this panel compares against the prior year end.
+COMPARE_WINDOWS = ("3M", "6M", "1Y", "2Y", "Prior year end")
+
+
+def _history_window_start(choice: str) -> date | None:
+    """Map a history-window selector choice to a cutoff date (None = all)."""
+    years = {"1Y": 1, "2Y": 2, "3Y": 3, "5Y": 5, "10Y": 10}
+    if choice == "All" or choice not in years:
+        return None
+    today = date.today()
+    try:
+        return today.replace(year=today.year - years[choice])
+    except ValueError:
+        # Feb 29 on a non-leap target year -> clamp to Feb 28.
+        return date(today.year - years[choice], 2, 28)
+
+
+def _compare_date(choice: str, anchor: date) -> date:
+    """Map a comparison-window choice to the date the second dot reads at."""
+    months = {"3M": 3, "6M": 6, "1Y": 12, "2Y": 24}
+    if choice not in months:
+        return date(anchor.year - 1, 12, 31)          # prior year end
+    back = months[choice]
+    year, month = anchor.year, anchor.month - back
+    while month <= 0:
+        year, month = year - 1, month + 12
+    day = min(anchor.day, [31, 29 if year % 4 == 0 and (year % 100 or not year % 400)
+                           else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    return date(year, month, day)
+
+
 def _num(x):
     """Text-input to float, or None. The manual labour inputs are text rather
     than number widgets so an empty field stays genuinely empty instead of
@@ -508,6 +547,17 @@ with LEFT:
     # never recovers. Rendering only the active section fixes that.
     section = st.segmented_control("Section", SECTIONS, default=SECTIONS[0],
                                    label_visibility="collapsed") or SECTIONS[0]
+
+    # History windows reset to their default whenever the user navigates into
+    # the tab; widget state otherwise persists across tab switches, so a 10Y
+    # window set an hour ago would still be in force on a tab the reader has
+    # just opened, with nothing on screen saying why the chart starts in 2016.
+    if st.session_state.get("_prev_section") != section:
+        if section == "Labour":
+            st.session_state["compare_window_labour"] = "Prior year end"
+        if section == "Inflation":
+            st.session_state["hist_window_inflation"] = "10Y"
+        st.session_state["_prev_section"] = section
 
     # ---------------------------------------------------------- 1. Pricing
     if section == "Pricing":
@@ -957,44 +1007,70 @@ with LEFT:
 
     # ----------------------------------------------------------- 5. Labour
     elif section == "Labour":
-        C.section("Full employment indicators",
-                  "Each series scored against its own history, not against a trend.")
-        C.note(
-            "Every row is a **z-score**: how far today's reading sits from that series' "
-            "own 2000\u20132020 average, in standard deviations. Right of zero is a "
-            "**tighter** labour market than that average \u2014 which means the five slack "
-            "measures have their sign flipped, or a high unemployment rate would plot on "
-            "the same side as a high vacancies ratio and the panel would be unreadable.")
-        C.note(
-            "This is deliberately a z-score and not the RBA's own gap-from-trend version "
-            "of the same idea. The RBA publishes neither the filters it detrends with nor "
-            "how it rescales each series, so that chart can only be read off, never "
-            "rebuilt. `z = (x \u2212 mean) / sd` over a stated window has no such freedom: "
-            "every term comes from the data and one date range.")
+        ehdr, ehlp = st.columns([1, 0.06], vertical_alignment="center")
+        with ehdr:
+            C.section("Full employment indicators",
+                      "Each series scored against its own history, not against "
+                      "a trend.")
+        with ehlp:
+            C.formula_help(
+                r"z = \frac{x - \mu_{[\text{start},\,\text{end}]}}"
+                r"{\sigma_{[\text{start},\,\text{end}]}}"
+                r"\qquad z \mapsto -z \ \text{ for a slack measure}",
+                "Every row is a z-score: how far today's reading sits from that "
+                "series' own window average, in standard deviations. Right of "
+                "zero is a tighter labour market than that average \u2014 which means "
+                "the five slack measures have their sign flipped, or a high "
+                "unemployment rate would plot on the same side as a high "
+                "vacancies ratio and the panel would be unreadable.\n\n"
+                "Deliberately a z-score rather than the RBA's own gap-from-trend "
+                "version of the same idea. The RBA publishes neither the filters "
+                "it detrends with nor how it rescales each series, so that chart "
+                "can only be read off, never rebuilt. This one has no such "
+                "freedom: every term comes from the data and one date range, and "
+                "the range is a control on screen.",
+                "see core.employment", "employment")
 
+        data = abs_series()
         emp_state = S.setdefault("employment", {})
-        a, b = st.columns([1, 1])
-        with a:
-            w_start = st.number_input(
-                "Window start year", value=int(emp_state.get("window_start") or 2000),
-                min_value=1978, max_value=TODAY.year - 5, step=1, on_change=mark_dirty)
-            emp_state["window_start"] = int(w_start)
-        with b:
-            w_end = st.number_input(
-                "Window end year", value=int(emp_state.get("window_end") or 2020),
-                min_value=int(w_start) + 4, max_value=TODAY.year, step=1,
-                on_change=mark_dirty)
-            emp_state["window_end"] = int(w_end)
-        prior = st.date_input(
-            "Compare against",
-            value=date.fromisoformat(emp_state.get("prior_date") or "2025-12-31"),
-            on_change=mark_dirty,
-            help="The second dot on each row. The published version of this panel "
-                 "compares the latest reading with the prior year end.")
+        C.vintage(charts.Vintage(last_modified=data_asof(data)).line)
+
+        # Comparison window first, in the same slot the FOMC version puts its
+        # change window: it is the control that changes what the chart says,
+        # and the z-score window below only changes what it is measured against.
+        compare = st.segmented_control(
+            "Compare against", COMPARE_WINDOWS, default="Prior year end",
+            key="compare_window_labour", label_visibility="collapsed",
+            help="The second dot on each row, and the direction of travel every "
+                 "row's rule shows. The published version of this panel compares "
+                 "the latest reading against the prior year end.") or "Prior year end"
+        st.caption("Compare the latest reading against")
+
+        prior = _compare_date(compare, data_asof(data))
         emp_state["prior_date"] = prior.isoformat()
 
+        with st.expander("Scoring window \u2014 the average each z is measured against"):
+            a, b = st.columns([1, 1])
+            with a:
+                w_start = st.number_input(
+                    "Window start year",
+                    value=int(emp_state.get("window_start") or 2000),
+                    min_value=1978, max_value=TODAY.year - 5, step=1,
+                    on_change=mark_dirty)
+                emp_state["window_start"] = int(w_start)
+            with b:
+                w_end = st.number_input(
+                    "Window end year",
+                    value=int(emp_state.get("window_end") or 2020),
+                    min_value=int(w_start) + 4, max_value=TODAY.year, step=1,
+                    on_change=mark_dirty)
+                emp_state["window_end"] = int(w_end)
+            C.note(
+                "2000\u20132020 by default: long enough to average over two cycles "
+                "and stopping before the pandemic, which would otherwise put its "
+                "own extremes into the yardstick every reading is measured against.")
+
         wstart, wend = date(int(w_start), 1, 1), date(int(w_end), 12, 31)
-        data = abs_series()
         manual = emp_state.setdefault("manual", {})
 
         rows = []
@@ -1010,10 +1086,21 @@ with LEFT:
         panel = empmod.Panel(rows, prior, (wstart, wend))
 
         prior_label = f"{prior:%b %Y}"
+        _lgh, _lghlp = st.columns([1, 0.06], vertical_alignment="center")
+        with _lgh:
+            C.legend([(f"{prior_label} — {compare.lower()}", P.muted),
+                      ("Current", P.serious)])
+        with _lghlp:
+            C.formula_help(
+                "",
+                f"Muted dot is {prior_label}, the coloured dot the latest print, "
+                f"and the rule between them the travel since. Right of zero is "
+                f"tighter than the {w_start}–{w_end} average.",
+                "", "employment-read")
         st.altair_chart(
             charts.full_employment(rows, panel.total_z, panel.total_prior_z,
                                    prior_label, P),
-            use_container_width=True)
+            width="stretch", theme=None)
 
         C.table(
             ["Indicator", "Last", "As of", "z now", f"z {prior_label}", "Change", "Source"],
@@ -1029,10 +1116,16 @@ with LEFT:
         if panel.total_z is not None:
             c1, c2, c3 = st.columns(3)
             c1.metric("Total (mean z)", f"{panel.total_z:+.2f}",
-                      None if panel.total_delta is None else f"{panel.total_delta:+.2f}")
-            c2.metric("Tighter than average", f"{panel.n_tighter} of {panel.n_scored}")
+                      None if panel.total_delta is None else f"{panel.total_delta:+.2f}",
+                      help="Unweighted mean of every scored row. Above zero is a "
+                           "labour market tighter than its own window average.")
+            c2.metric("Tighter than average", f"{panel.n_tighter} of {panel.n_scored}",
+                      help="Rows sitting right of zero — tighter than the "
+                           f"{w_start}–{w_end} average for that series.")
             c3.metric("Tightening since " + prior_label,
-                      f"{panel.n_tightening} of {panel.n_scored}")
+                      f"{panel.n_tightening} of {panel.n_scored}",
+                      help="Rows that moved toward less slack over the comparison "
+                           "window, whichever side of zero they sit on.")
             C.note(
                 "The Total is an **unweighted** mean, and it is reported with its row "
                 "count because those two facts belong together. Unweighted because these "
@@ -1042,7 +1135,9 @@ with LEFT:
 
         stale = panel.oldest_reading
         if stale is not None and panel.as_of and stale.current.when < panel.as_of:
-            C.vintage(
+            # A note, not `C.vintage`: that renders the formatted release line
+            # under a title, and this is prose about one row lagging the rest.
+            C.note(
                 f"Panel is only as current as its stalest row: {stale.indicator.label} "
                 f"stands at {stale.current.when:%b %Y} against {panel.as_of:%b %Y} for the "
                 "rest. ABS Labour Force Detailed has not moved past March 2026 because of "
@@ -1079,9 +1174,25 @@ with LEFT:
 
     # -------------------------------------------------------- 5. Inflation
     elif section == "Inflation":
-        C.section("Inflation",
-                  "Five readings of one CPI. The headline is the target; "
-                  "these say whether it is a monetary problem.")
+        ihdr, ihlp = st.columns([1, 0.06], vertical_alignment="center")
+        with ihdr:
+            C.section("Inflation",
+                      "Five readings of one CPI. The headline is the target; "
+                      "these say whether it is a monetary problem.")
+        with ihlp:
+            C.formula_help(
+                r"\text{annualised}_t = 100\left[\left(\frac{I_t}{I_{t-1}}"
+                r"\right)^{4} - 1\right] \qquad "
+                r"\text{breadth} = \frac{\sum_{i\,:\,\pi_i > k} w_i}{\sum_i w_i}",
+                "A quarterly change compounded to a yearly pace, then the share "
+                "of the basket above a threshold — counted two ways, once with "
+                "every expenditure class equal and once with each carrying its "
+                "own CPI weight. Compounded rather than multiplied by four: the "
+                "breadth charts count items against a fixed threshold, so a "
+                "systematic bias of the wrong sign moves items across the line "
+                "and changes the count.",
+                "see core.inflation", "inflation")
+
         cpi = cpi_series()
         buckets, cyclical = cpi_classification()
         # The vintage line answers the two questions a pre-meeting reader has:
@@ -1109,23 +1220,29 @@ with LEFT:
                 "through history."
             )
 
-            start = st.slider("History from", 1990, 2020,
-                              value=1990, step=1, format="%d",
-                              help="Start year for the two breadth charts. "
-                                   "Drag to 2013 for the published window on "
-                                   "the left-hand chart.")
-            start_d = date(start, 1, 1)
+            window = st.segmented_control(
+                "History window", HISTORY_WINDOWS, default="10Y",
+                key="hist_window_inflation", label_visibility="collapsed",
+                help="How much recent history to show. Applies to every chart "
+                     "on the tab. `All` reaches back to 1990 on the breadth "
+                     "charts and to the start of each series on the rest.")
+            start_d = _history_window_start(window)
+            st.caption("Show recent history")
 
             classes, weights = cpi["classes"], cpi["weights"]
 
             # Row 1 -- how much of the basket is hot, and what is doing it.
             r1a, r1b = st.columns(2, gap="medium")
             with r1a:
-                pts = infl.breadth(classes, weights, infl.ABOVE_BAND, 1)
+                min_live = int(0.8 * len(cpi["leaves"]))
+                pts = infl.breadth(classes, weights, infl.ABOVE_BAND, 1,
+                                   min_live)
                 st.altair_chart(
                     charts.cpi_above_threshold(pts, P, infl.ABOVE_BAND,
                                                start_d, vintage),
-                    use_container_width=True)
+                    width="stretch", theme=None)
+                C.legend([("By number of items", P.categorical[0]),
+                          ("By weight of price categories", P.categorical[1])])
             with r1b:
                 if not buckets:
                     st.info("No bucket classification — see "
@@ -1140,8 +1257,14 @@ with LEFT:
                         order.append(infl.RESIDUAL)
                     st.altair_chart(
                         charts.cpi_composition(pp, cpi["headline_q"], order, P,
-                                               date(2015, 1, 1), vintage),
-                        use_container_width=True)
+                                               start_d, vintage),
+                        width="stretch", theme=None)
+                    # Seven buckets plus the CPI line is past what a Vega legend
+                    # can hold without taking the plot's height with it, so the
+                    # key is rendered here -- the same treatment the FOMC
+                    # version gives its payroll-components chart.
+                    C.legend([(n, P.categorical[i]) for i, n in enumerate(order)]
+                             + [("CPI, % q/q", P.ink)])
 
             # Row 2 -- the measures the Board actually targets, and breadth
             # against the trimmed mean over the full history.
@@ -1154,10 +1277,13 @@ with LEFT:
                     charts.cpi_underlying(
                         {q: cpi["trimmed_yr"], m: cpi["monthly_trimmed_yr"],
                          x: cpi["monthly_ex_volatiles_yr"]},
-                        [q, m, x], P, date(2018, 1, 1), vintage),
-                    use_container_width=True)
+                        [q, m, x], P, start_d, vintage),
+                    width="stretch", theme=None)
+                C.legend([(q, P.categorical[0]), (m, P.categorical[1]),
+                          (x, P.categorical[2]), ("2–3% target band", P.grid)])
             with r2b:
-                wide = infl.breadth(classes, weights, infl.ABOVE_MIDPOINT, 1)
+                wide = infl.breadth(classes, weights, infl.ABOVE_MIDPOINT, 1,
+                                    int(0.8 * len(cpi["leaves"])))
                 share = [(pt.when, pt.share_by_weight) for pt in wide]
                 lo, hi = date(1993, 1, 1), date(2019, 12, 31)
                 st.altair_chart(
@@ -1166,7 +1292,10 @@ with LEFT:
                         infl.mean_over(share, lo, hi),
                         infl.mean_over(cpi["trimmed_q"], lo, hi),
                         "1993–2019", P, start_d, vintage),
-                    use_container_width=True)
+                    width="stretch", theme=None)
+                C.legend([("% of basket rising > 2.5% annualised", P.categorical[1]),
+                          ("Trimmed mean, % q/q", P.categorical[0]),
+                          ("1993–2019 average", P.muted)])
 
             # Row 3 -- the classification worth arguing with, on its own row so
             # the caveat under it is readable rather than squeezed.
@@ -1178,8 +1307,13 @@ with LEFT:
                 else:
                     split = infl.cycle_split(weights, cyclical, cpi["leaves"])
                     st.altair_chart(
-                        charts.cpi_cycle(split, P, date(2010, 1, 1), vintage),
-                        use_container_width=True)
+                        charts.cpi_cycle(split, P, start_d, vintage),
+                        width="stretch", theme=None)
+                    C.legend([
+                        (f"'Cyclical' — {split.n_cyclical} classes",
+                         P.categorical[0]),
+                        (f"'Non-cyclical' — {split.n_non_cyclical} classes",
+                         P.categorical[1])])
             with r3b:
                 st.markdown(
                     "**What is a judgement here, and what is not.**\n\n"

@@ -94,6 +94,27 @@ pins those to catch a port that damaged the engine. What genuinely changed:
   daily noise rather than this one meeting's, and type an override when the
   distinction matters.
 
+## Shared with the FOMC version
+
+The Labour and Inflation tabs are built to the same conventions as their US
+siblings, so a reader moving between the two apps reads one interface rather
+than two:
+
+- a **history-window control** in the same slot with the same vocabulary
+  (1Y/2Y/3Y/5Y/10Y/All), resetting to its default on entering the tab — a 10Y
+  window set an hour ago on another tab is not a state a reader can see;
+- **section headers carrying a `?`** with the formula, the plain-English gloss
+  and what it is computed from;
+- a **vintage line under every chart title** — when the source last landed and
+  when it next publishes, off the same rule-derived calendar the Monte Carlo
+  prices release days from;
+- **legends rendered beneath the chart** rather than inside it. Vega takes a
+  bottom legend's rows out of the plot's height budget: at seven buckets and
+  210px the contributions stack flattened to a line and the y-axis dropped its
+  labels;
+- an **x-axis fitted to the window** — month-year labels under three years,
+  years beyond. Without it a 1Y window prints "2026" four times.
+
 ## The Labour tab
 
 Nine full-employment indicators, each scored as a **z-score against its own

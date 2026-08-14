@@ -79,6 +79,13 @@ hr, [data-testid="stDivider"] { margin: 0.55rem 0 !important; opacity: 0.45; }
   border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent);
 }
 .fomc-table td.n, .fomc-table th.n { text-align: right; padding-right: 0; }
+/* ...but only where it IS last. A right-aligned figure followed by a text
+   column has nothing between them, so "4.4283%" and "Jun 2026" render as
+   "4.4283%Jun 2026". The flush-right treatment above is for a trailing numeric
+   column; anywhere else the gutter has to come back. */
+.fomc-table td.n:not(:last-child), .fomc-table th.n:not(:last-child) {
+  padding-right: 0.55rem;
+}
 .fomc-table tr.mark td { font-weight: 600; }
 .fomc-table tr.mark td:first-child::before { content: "▸ "; opacity: 0.55; }
 /* A row_bg tint is a background on <tr>, but <td> has no background of its

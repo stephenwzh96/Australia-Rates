@@ -344,3 +344,17 @@ def test_prose_keys_are_not_buckets():
     buckets, cyclical = infl.load_classification(path)
     assert [b.name for b in buckets] == ["Real"]
     assert cyclical == ["A"]
+
+
+def test_breadth_can_refuse_a_quarter_too_few_classes_cover():
+    """A share over 12 classes is not the same statistic as one over 87.
+
+    Left off rather than inferred: the ABS basket grows through the 1970s and
+    1980s, and an unfiltered series reads as a market permanently at the
+    extremes for its first two decades.
+    """
+    d0, d1 = date(2026, 3, 1), date(2026, 6, 1)
+    idx = {"a": [(date(2025, 12, 1), 100.0), (d0, 104.0), (d1, 104.0)],
+           "late": [(d0, 100.0), (d1, 100.0)]}
+    assert [p.when for p in infl.breadth(idx, {}, min_live=2)] == [d1]
+    assert [p.when for p in infl.breadth(idx, {})] == [d0, d1]

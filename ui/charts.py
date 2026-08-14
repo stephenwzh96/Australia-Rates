@@ -914,10 +914,13 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
             # to ellipses -- and an indicator you cannot read is not plotted.
             y=alt.Y("label:N", sort=ysort, scale=ys,
                     axis=alt.Axis(title=None, labelLimit=260)),
+            # No Vega legend: the caller renders the key with `components.legend`
+            # beside the `?` that explains how to read the pair, which is where
+            # the FOMC version puts it and keeps the two dashboards identical.
             color=alt.Color("when:N",
                             scale=alt.Scale(domain=[prior_label, "Current"],
                                             range=[p.muted, p.serious]),
-                            legend=alt.Legend(title=None, orient="bottom")),
+                            legend=None),
             tooltip=[alt.Tooltip("label:N", title="indicator"),
                      alt.Tooltip("when:N", title="date"),
                      alt.Tooltip("value:Q", format=".4f", title="reading"),
@@ -967,14 +970,34 @@ def _since(df: pd.DataFrame, start: date | None) -> pd.DataFrame:
     return df[df["when"] >= pd.Timestamp(start)]
 
 
+def _time_axis(df: pd.DataFrame, cols: str = "when") -> alt.Axis:
+    """X axis fitted to the span actually plotted.
+
+    The history-window selector is only useful if the axis answers it: at 1Y a
+    year-only axis prints "2026" four times, and at All a month-year axis is an
+    unreadable smear. Short windows get month-year labels, longer history falls
+    back to years -- the same rule and the same thresholds the FOMC version
+    uses, so a reader switching tabs reads one axis convention.
+    """
+    if df.empty:
+        return alt.Axis(title=None, format="%Y", tickCount=6)
+    span = (df[cols].max() - df[cols].min()).days
+    if span <= 3 * 366:
+        return alt.Axis(title=None, format="%b %Y", tickCount=8, labelAngle=0)
+    return alt.Axis(title=None, format="%Y", tickCount=6)
+
+
 def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
            y_format: str = ".1f", zero_rule: bool = False,
            y_domain: tuple[float, float] | None = None) -> list[alt.Chart]:
     """A multi-series line chart's layers: optional zero rule, then the lines.
 
-    Legend always on for two or more series, per the accessibility rule that
-    identity is never colour alone; the hover readout names the series too, so
-    a reader who cannot separate two hues still gets the answer.
+    No Vega legend on any of them. Every caller renders the key underneath with
+    `components.legend`, which is what the FOMC version does and what keeps the
+    two tabs identical -- and it also stops a legend from eating the plot's
+    height, which a bottom-oriented Vega legend does. Identity is still never
+    colour alone: the key is always present and the hover readout names the
+    series.
     """
     scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
     ys = alt.Scale(zero=False) if y_domain is None else alt.Scale(domain=list(y_domain))
@@ -985,11 +1008,9 @@ def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
                       .encode(y=alt.Y("y:Q")))
     layers.append(
         alt.Chart(df).mark_line(strokeWidth=LINE_WIDTH, clip=True).encode(
-            x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+            x=alt.X("when:T", axis=_time_axis(df)),
             y=alt.Y("value:Q", scale=ys, axis=alt.Axis(title=y_title, format=y_format)),
-            color=alt.Color("series:N", scale=scale, sort=order,
-                            legend=alt.Legend(title=None, orient="bottom",
-                                              columns=1, labelLimit=320)),
+            color=alt.Color("series:N", scale=scale, sort=order, legend=None),
             tooltip=[alt.Tooltip("series:N", title=""),
                      alt.Tooltip("when:T", title="quarter", format="%b %Y"),
                      alt.Tooltip("value:Q", title="per cent", format=".2f")]))
@@ -1035,25 +1056,34 @@ def cpi_composition(buckets, cpi_line, order: list[str], p: Palette,
     line = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
                                 for d, v in cpi_line]) if cpi_line
                   else _EMPTY.copy()[["when", "value"]], start)
+    # Clip the CPI line to the span the STACK covers. The published headline
+    # reaches back to 1987 and the decomposition only to 2011, when the last
+    # expenditure class enters, so an unclipped line runs forty quarters past
+    # its own explanation -- which reads as the buckets failing to account for
+    # it rather than as data that does not exist yet.
+    if not df.empty and not line.empty:
+        line = line[(line["when"] >= df["when"].min())
+                    & (line["when"] <= df["when"].max())]
     scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
 
-    # A fixed bar width rather than Vega's automatic one. Forty-odd quarters in
-    # a half-width column leaves about 8px each, and the surface stroke that
-    # separates stacked segments then eats most of the bar -- at 1px it renders
-    # the stack as a row of hairlines. 6px of fill with a half-pixel edge keeps
-    # both the segment separation and the bar.
-    bars = alt.Chart(df).mark_bar(size=6, stroke=p.surface, strokeWidth=0.5).encode(
-        x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+    # Bar width set here rather than left to Vega, and scaled to how many
+    # quarters the history window actually put on screen. Vega's automatic
+    # width plus the surface stroke that separates stacked segments renders
+    # forty quarters as a row of hairlines; a fixed width instead leaves four
+    # quarters looking like stray ticks. Roughly three-quarters of each
+    # quarter's slice of an assumed half-width column, clamped either side.
+    n_bars = df["when"].nunique() or 1
+    bar_w = max(3.0, min(30.0, 380.0 / n_bars * 0.75))
+    bars = alt.Chart(df).mark_bar(size=bar_w, stroke=p.surface,
+                                  strokeWidth=0.5).encode(
+        x=alt.X("when:T", axis=_time_axis(df)),
         y=alt.Y("value:Q", stack="zero",
                 axis=alt.Axis(title="percentage points", format=".1f")),
-        # Legend to the RIGHT, not the bottom. Vega takes a bottom legend's
-        # rows out of the same height budget as the plot, and with seven
-        # buckets that left about 40px of plot -- the stack flattened to a line
-        # and the y-axis dropped its labels. On the side it costs width, which
-        # this chart has more of to give.
-        color=alt.Color("series:N", scale=scale, sort=order,
-                        legend=alt.Legend(title=None, orient="right",
-                                          columns=1, labelLimit=150)),
+        # No Vega legend: seven buckets on the right cost the plot its width and
+        # on the bottom cost it its height -- at 210px the stack flattened to a
+        # line and the y-axis dropped its labels. The caller draws the key
+        # underneath instead, which is free.
+        color=alt.Color("series:N", scale=scale, sort=order, legend=None),
         order=alt.Order("series:N", sort="ascending"),
         tooltip=[alt.Tooltip("series:N", title=""),
                  alt.Tooltip("when:T", title="quarter", format="%b %Y"),
@@ -1114,7 +1144,7 @@ def cpi_breadth(share, trimmed, share_mean: float | None, trimmed_mean: float | 
         axis_title = y_title if mean is None else \
             f"{y_title}  ·  mean {mean:{fmt}}"
         line = alt.Chart(df).mark_line(strokeWidth=1.5, color=colour).encode(
-            x=alt.X("when:T", axis=alt.Axis(title=None, format="%Y")),
+            x=alt.X("when:T", axis=_time_axis(df)),
             y=alt.Y("value:Q", scale=alt.Scale(zero=False),
                     axis=alt.Axis(title=axis_title, format=fmt)),
             tooltip=[alt.Tooltip("when:T", title="quarter", format="%b %Y"),

@@ -294,8 +294,8 @@ class BreadthPoint:
 
 
 def breadth(class_indexes: dict[str, Series], weights: dict[str, Series],
-            threshold: float = ABOVE_BAND,
-            periods: int = 1) -> list[BreadthPoint]:
+            threshold: float = ABOVE_BAND, periods: int = 1,
+            min_live: int = 0) -> list[BreadthPoint]:
     """Share of the basket inflating faster than `threshold`, two ways.
 
     By COUNT every class carries equal say, which is the honest measure of how
@@ -308,6 +308,13 @@ def breadth(class_indexes: dict[str, Series], weights: dict[str, Series],
     Weights come from the ABS's own `Contribution to Total CPI`, taken at each
     date rather than fixed, so the annual reweighting is picked up instead of
     today's basket being projected back over history.
+
+    `min_live` drops quarters covered by too few classes. A share is a ratio,
+    so an arriving class is not the discontinuity it is for a level index -- but
+    a share measured over the twelve classes the ABS published in 1972 is not
+    the same statistic as one over 87, and plotted on one axis the early years
+    read as a basket permanently at the extremes. Nothing is inferred to fill
+    the gap; the quarter simply does not appear.
     """
     rates = {n: dict(annualised(s, periods)) for n, s in class_indexes.items()}
     wts = {n: dict(s) for n, s in weights.items()}
@@ -319,7 +326,7 @@ def breadth(class_indexes: dict[str, Series], weights: dict[str, Series],
     out: list[BreadthPoint] = []
     for when in sorted(dates):
         live = [(n, r[when]) for n, r in rates.items() if when in r]
-        if not live:
+        if not live or len(live) < min_live:
             continue
         above = [n for n, v in live if v > threshold]
         total_w = sum(abs(wts.get(n, {}).get(when, 0.0)) for n, _ in live)
