@@ -24,10 +24,13 @@ if str(ROOT) not in sys.path:
 import streamlit as st
 
 from core import bbsw as bbswmod
+from core import employment as empmod
 from core import contracts, econ_calendar, model, montecarlo, pricing, rba_calendar
 from core import sizing as sizingmod
 from core import strip as stripmod
+from data import abs as absmod
 from data import asx, rba
+from data import cache as datacache
 from data.common import Observation
 from export import report
 from state import store
@@ -133,6 +136,42 @@ def kill_series_history() -> dict[str, list]:
     return out
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS labour workbooks…")
+def abs_series() -> dict[str, list]:
+    """Every labour series the full-employment panel scores, in one call.
+
+    Cached hard: the ABS ships these as multi-megabyte Excel workbooks, and
+    `data.abs` keys its disk cache on the release period so a month that has
+    already been downloaded is never fetched again.
+    """
+    wb = absmod.labour_force_rates()
+    dur = absmod.duration_counts()
+    h5 = rba.table_cached("h5")
+
+    def col(w, header, stype="Seasonally Adjusted"):
+        return [(o.date, o.value) for o in w.find(header, stype)]
+
+    def h(code):
+        return [(o.date, o.value) for o in h5.get(code, [])]
+
+    une = col(wb, absmod.UNEMPLOYMENT)
+    und = col(wb, absmod.UNDEREMPLOYMENT)
+    buckets = [col(dur, b, "Original") for b in absmod.MEDIUM_TERM_BUCKETS]
+    return {
+        "unemployment": une,
+        "underemployment": und,
+        "underutilisation": empmod.derive_underutilisation(une, und),
+        "medium_term": empmod.derive_medium_term(buckets, h("GLFSLFSA")),
+        "youth": col(wb, absmod.YOUTH_UNEMPLOYMENT),
+        # Vacancies are quarterly and unemployment monthly, so the current
+        # reading pairs the latest of each rather than the latest shared month.
+        "vacancies_to_unemployment": empmod.derive_ratio(
+            h("GLFOSVT"), h("GLFSUPSA"), pair_latest=True),
+        "_periods": [absmod.latest_release(absmod.LF_LANDING) or "",
+                     absmod.latest_release(absmod.LFD_LANDING) or ""],
+    }
+
+
 def kill_series_values() -> tuple[dict, dict]:
     """Live values for the auto-wired kill criteria, plus their units."""
     t = fetch_rba_table()
@@ -164,6 +203,23 @@ def calendar_meetings() -> list[rba_calendar.Meeting]:
 
 
 MEETINGS = calendar_meetings()
+
+
+def _num(x):
+    """Text-input to float, or None. The manual labour inputs are text rather
+    than number widgets so an empty field stays genuinely empty instead of
+    collapsing to 0.0 and scoring as a real reading."""
+    try:
+        return None if x in (None, "") else float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def data_asof(data: dict) -> date:
+    """Newest observation anywhere in the ABS panel -- the date a typed
+    reading is assumed to be current as of."""
+    dates = [s[-1][0] for k, s in data.items() if not k.startswith("_") and s]
+    return max(dates) if dates else TODAY
 
 
 def mark_dirty() -> None:
@@ -368,7 +424,7 @@ LEFT, RIGHT = st.columns([1, 0.34], gap="large")
 # ------------------------------------------------------------------ working
 
 SECTIONS = ["Pricing", "Curve", "Sensitivity & size", "Path & kills",
-            "Vote count", "Data"]
+            "Labour", "Vote count", "Data"]
 
 with LEFT:
     st.markdown(f"### {M.label} — RBA Monetary Policy Board")
@@ -835,6 +891,128 @@ with LEFT:
             mark_dirty()
             st.rerun()
 
+    # ----------------------------------------------------------- 5. Labour
+    elif section == "Labour":
+        C.section("Full employment indicators",
+                  "Each series scored against its own history, not against a trend.")
+        C.note(
+            "Every row is a **z-score**: how far today's reading sits from that series' "
+            "own 2000\u20132020 average, in standard deviations. Right of zero is a "
+            "**tighter** labour market than that average \u2014 which means the five slack "
+            "measures have their sign flipped, or a high unemployment rate would plot on "
+            "the same side as a high vacancies ratio and the panel would be unreadable.")
+        C.note(
+            "This is deliberately a z-score and not the RBA's own gap-from-trend version "
+            "of the same idea. The RBA publishes neither the filters it detrends with nor "
+            "how it rescales each series, so that chart can only be read off, never "
+            "rebuilt. `z = (x \u2212 mean) / sd` over a stated window has no such freedom: "
+            "every term comes from the data and one date range.")
+
+        emp_state = S.setdefault("employment", {})
+        a, b = st.columns([1, 1])
+        with a:
+            w_start = st.number_input(
+                "Window start year", value=int(emp_state.get("window_start") or 2000),
+                min_value=1978, max_value=TODAY.year - 5, step=1, on_change=mark_dirty)
+            emp_state["window_start"] = int(w_start)
+        with b:
+            w_end = st.number_input(
+                "Window end year", value=int(emp_state.get("window_end") or 2020),
+                min_value=int(w_start) + 4, max_value=TODAY.year, step=1,
+                on_change=mark_dirty)
+            emp_state["window_end"] = int(w_end)
+        prior = st.date_input(
+            "Compare against",
+            value=date.fromisoformat(emp_state.get("prior_date") or "2025-12-31"),
+            on_change=mark_dirty,
+            help="The second dot on each row. The published version of this panel "
+                 "compares the latest reading with the prior year end.")
+        emp_state["prior_date"] = prior.isoformat()
+
+        wstart, wend = date(int(w_start), 1, 1), date(int(w_end), 12, 31)
+        data = abs_series()
+        manual = emp_state.setdefault("manual", {})
+
+        rows = []
+        for ind in empmod.INDICATORS:
+            if ind.manual:
+                m = manual.setdefault(ind.key, {})
+                rows.append(empmod.manual_row(
+                    ind, _num(m.get("value")), _num(m.get("mean")), _num(m.get("sd")),
+                    _num(m.get("prior")), data_asof(data), prior))
+            else:
+                rows.append(empmod.score(ind, data.get(ind.key, []), prior,
+                                         wstart, wend))
+        panel = empmod.Panel(rows, prior, (wstart, wend))
+
+        prior_label = f"{prior:%b %Y}"
+        st.altair_chart(
+            charts.full_employment(rows, panel.total_z, panel.total_prior_z,
+                                   prior_label, P),
+            use_container_width=True)
+
+        C.table(
+            ["Indicator", "Last", "As of", "z now", f"z {prior_label}", "Change", "Source"],
+            [[r.indicator.label,
+              "\u2014" if not r.ok else f"{r.current.value:,.{r.indicator.decimals}f}{r.indicator.unit}",
+              "\u2014" if not r.ok else f"{r.current.when:%b %Y}",
+              "\u2014" if not r.ok else f"{r.current.z:+.2f}",
+              "\u2014" if not r.ok or r.prior is None else f"{r.prior.z:+.2f}",
+              "\u2014" if r.delta_z is None else f"{r.delta_z:+.2f}",
+              r.indicator.source] for r in rows],
+            numeric=(1, 3, 4, 5), nowrap=True)
+
+        if panel.total_z is not None:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total (mean z)", f"{panel.total_z:+.2f}",
+                      None if panel.total_delta is None else f"{panel.total_delta:+.2f}")
+            c2.metric("Tighter than average", f"{panel.n_tighter} of {panel.n_scored}")
+            c3.metric("Tightening since " + prior_label,
+                      f"{panel.n_tightening} of {panel.n_scored}")
+            C.note(
+                "The Total is an **unweighted** mean, and it is reported with its row "
+                "count because those two facts belong together. Unweighted because these "
+                "indicators overlap heavily \u2014 underutilisation is literally "
+                "unemployment plus underemployment \u2014 so any weighting would be a "
+                "second undocumented judgement on top of the window choice.")
+
+        stale = panel.oldest_reading
+        if stale is not None and panel.as_of and stale.current.when < panel.as_of:
+            C.vintage(
+                f"Panel is only as current as its stalest row: {stale.indicator.label} "
+                f"stands at {stale.current.when:%b %Y} against {panel.as_of:%b %Y} for the "
+                "rest. ABS Labour Force Detailed has not moved past March 2026 because of "
+                "the April survey changes \u2014 the same wall the RBA hits, which is why "
+                "its own tightness graph greys that indicator out.")
+
+        with st.expander("Series with no free feed"):
+            C.note(
+                "Three of the nine are commercial \u2014 NAB's business survey and "
+                "ANZ-Indeed \u2014 with no public series to score. They take a typed "
+                "reading plus the window mean and standard deviation to score it against. "
+                "A **z cannot be typed directly on purpose**: nothing on screen would show "
+                "what it had been measured against, and it would not move when the reading "
+                "did.")
+            for ind in empmod.INDICATORS:
+                if not ind.manual:
+                    continue
+                m = manual.setdefault(ind.key, {})
+                st.markdown(f"**{ind.label}** \u2014 {ind.source}")
+                q1, q2, q3, q4 = st.columns(4)
+                for col, key, lbl in ((q1, "value", "Latest"),
+                                      (q2, "prior", prior_label),
+                                      (q3, "mean", f"{w_start}\u2013{w_end} mean"),
+                                      (q4, "sd", "window sd")):
+                    with col:
+                        raw = st.text_input(lbl, value=str(m.get(key) or ""),
+                                            key=f"emp_{ind.key}_{key}",
+                                            on_change=mark_dirty)
+                        m[key] = raw.strip() or None
+
+        if panel.missing:
+            st.caption("Not scored: " + ", ".join(
+                f"{r.indicator.label} ({r.error})" for r in panel.missing))
+
     # ------------------------------------------------------- 5. Vote count
     elif section == "Vote count":
         C.section("Vote arithmetic", "A bloc of dissenters is not a decision.")
@@ -895,7 +1073,20 @@ with LEFT:
 
     # -------------------------------------------------------------- 6. Data
     elif section == "Data":
-        C.section("Sources", "Everything here is free and keyless.")
+        C.section("Data", "Every external source this app touches, in one place. "
+                          "Nothing here can block the Verdict \u2014 every fetch degrades "
+                          "to blank on failure, and any value can be typed by hand.")
+
+        if st.button("Refresh all sources", width="stretch"):
+            # Both layers, or nothing actually refetches: the Streamlit memo in
+            # front, the disk cache and the in-process table memo behind it.
+            for fn in (fetch_ib, fetch_ir, fetch_rba_table, rba_spot, bbsw_history,
+                       kill_series_history, policy_changes, abs_series):
+                fn.clear()
+            rba._table_memo.cache_clear()
+            absmod.latest_release.cache_clear()
+            datacache.clear()
+            st.rerun()
 
         ib_ok = bool([q for q in ib_quotes if q.ok])
         ir_ok = bool([q for q in ir_quotes if q.ok])
@@ -908,6 +1099,14 @@ with LEFT:
             "RBA statistical table F1", rba_ok,
             f"Cash rate {spot['cash']}%, 3-month BBSW {spot['bbsw']}%, "
             f"AONIA gap {spot['gap_bp']:+.1f}bp." if rba_ok else "unavailable", P)
+
+        _abs = abs_series()
+        _lf_period, _lfd_period = (_abs.get("_periods") or ["", ""])[:2]
+        _abs_ok = bool(_abs.get("unemployment"))
+        C.data_source_header(
+            "ABS Labour Force (Excel time series)", _abs_ok,
+            f"headline release {_lf_period or 'unknown'}, detailed release "
+            f"{_lfd_period or 'unknown'}." if _abs_ok else "unavailable", P)
 
         C.note(
             "No API key is needed for either source, which is a real difference from the US "
@@ -951,6 +1150,21 @@ with LEFT:
             "The RBA retired its OIS series in December 2022. That is why the live BBSW basis "
             "on the Curve tab is derived from the IB strip rather than read off a published "
             "OIS quote — an IB strip *is* an OIS curve, and a tradeable one.")
+
+        st.divider()
+        C.section("ABS labour series", "What the full-employment panel is scored from.")
+        C.table(["Series", "Observations", "From", "To"],
+                [[empmod.BY_KEY[k].label, f"{len(v):,}",
+                  f"{v[0][0]:%b %Y}", f"{v[-1][0]:%b %Y}"]
+                 for k, v in _abs.items() if not k.startswith("_") and v],
+                numeric=(1,))
+        C.note(
+            "The two ABS releases are **not on the same month**. Labour Force is at "
+            f"{_lf_period or '?'}; Labour Force Detailed, which is the only route to a "
+            f"duration-based medium-term unemployment rate, is at {_lfd_period or '?'} "
+            "after the April 2026 survey changes. `data.abs` reads both periods off the "
+            "ABS landing pages rather than deriving them from today's date, because a "
+            "hardcoded path rots every month and the two would drift apart silently.")
 
         st.divider()
         C.section("Releases between now and the decision")

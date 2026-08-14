@@ -128,6 +128,10 @@ def clone_forward(source_key: str, target: dict[str, Any], as_of: date) -> dict[
     for c in out.get("structure", {}).get("checklist", []):
         c["done"] = False
 
+    # The full-employment panel carries forward untouched: window, comparison
+    # date and the typed commercial readings are macro settings, not per-trade
+    # inputs, and re-typing them at every meeting is how they go stale.
+    out.setdefault("employment", {})
     out["structure"]["calendar"] = []
     out["structure"]["calendar_note"] = ""
     out.pop("notes", None)      # free-text notes no longer exist anywhere
@@ -214,6 +218,16 @@ def new_meeting(target: dict[str, Any], as_of: date, roster: list[dict[str, Any]
                  "no_move_falsely_stopped": 0, "move_target_hit": 0,
                  "move_stopped_early": 0, "move_gapped_through": 0, "note": ""},
         "kill_criteria": [dict(k) for k in DEFAULT_KILL_CRITERIA],
+        # Full-employment panel settings. The manual readings are the three
+        # commercial series with no free feed; they are seeded EMPTY rather
+        # than with a plausible number, because an unsourced figure that looks
+        # like data is worse than a blank one.
+        "employment": {
+            "window_start": 2000, "window_end": 2020,
+            "prior_date": "2025-12-31",
+            "manual": {"labour_constraint": {}, "job_ads": {},
+                       "employment_intentions": {}},
+        },
         "structure": {"spread_enabled": True, "spread_note": "", "far_leg_points": None,
                       "far_leg_size": 25.0, "scenarios": [], "calendar": [],
                       "calendar_note": "", "checklist": []},

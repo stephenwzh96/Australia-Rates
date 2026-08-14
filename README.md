@@ -27,6 +27,9 @@ meeting, so a meeting can be bookmarked.
 |---|---|---|
 | ASX (Markit JSON) | IB strip, 18 monthly contracts; IR strip, 18 contracts to 2030 | no |
 | RBA table F1 | daily cash rate target, AONIA, BBSW 1/3/6-month | no |
+| RBA table H5 | labour force, unemployment level, job vacancies | no |
+| ABS Labour Force | unemployment, underemployment, youth rates (Excel time series) | no |
+| ABS Labour Force Detailed | unemployed by duration of job search | no |
 
 A failed HTTP call never blocks the Verdict. With both sources dead and no
 cache, every field is still typeable and the pricing, sizing and export all
@@ -88,11 +91,53 @@ pins those to catch a port that damaged the engine. What genuinely changed:
   daily noise rather than this one meeting's, and type an override when the
   distinction matters.
 
+## The Labour tab
+
+Nine full-employment indicators, each scored as a **z-score against its own
+2000–2020 average** and plotted at two dates so the direction of travel reads
+alongside the level. Right of zero is a tighter labour market, which means the
+five slack measures have their sign flipped — otherwise a low unemployment rate
+would plot on the same side as a low vacancies ratio.
+
+A z-score, deliberately, rather than the RBA's own gap-from-trend version of the
+same panel. The RBA publishes neither the filters it detrends with nor how it
+rescales each series into unemployment-rate units, so that chart can only be
+read off, never rebuilt. `z = (x − mean) / sd` over a stated window has no such
+freedom: every term comes from the data and one date range, and the window is a
+control on screen rather than a constant buried in the arithmetic.
+
+Six of the nine compute live from ABS and RBA sources, and all six reproduce an
+independently published rendering of the same panel — four exactly, two to that
+source's own rounding:
+
+| Indicator | Computed | Published |
+|---|---|---|
+| Unemployment Rate | 4.4283 | 4.4283 |
+| Underemployment Rate | 6.5093 | 6.5093 |
+| Underutilisation Rate | 10.9376 | 10.938 |
+| Medium-term Unemployment Rate | 2.5273 | 2.5273 |
+| Youth Unemployment | 10.6657 | 10.666 |
+| Vacancies-to-Unemployment | 47.9761 | 47.973 |
+
+Three — firms reporting labour constraints, employment intentions (NAB Business
+Survey) and job ads as a share of the labour force (ANZ-Indeed) — are commercial
+with no free feed. They take a typed reading plus the window mean and standard
+deviation. A z cannot be typed directly on purpose: nothing on screen would show
+what it had been measured against, and it would not move when the reading did.
+
+Two things the tab surfaces rather than hides. The **two ABS releases sit on
+different months** — headline Labour Force at June 2026, Detailed still at March
+after the April survey changes — so the medium-term unemployment rate is months
+staler than the rest and the panel says which row is holding it back. And the
+**Total is an unweighted mean reported with its row count**, because these
+indicators overlap heavily (underutilisation is literally unemployment plus
+underemployment) and any weighting would be a second undocumented judgement on
+top of the window choice.
+
 ## Not included
 
-The **Labour** and **Inflation** tabs are deliberately absent — different
-figures are coming. **Release prep** and the LLM research agent came out with
-them. `core/econ_calendar.py` survives in slim form (dates only, no series
+The **Inflation** tab is deliberately absent — different figures are coming.
+**Release prep** and the LLM research agent came out with it. `core/econ_calendar.py` survives in slim form (dates only, no series
 values) because the Monte Carlo's release-day volatility multipliers are keyed
 off it; without it a CPI Wednesday would be priced like a quiet Tuesday. On
 Australian data quarterly CPI comes out at roughly 5x a quiet day — by a wide
@@ -125,8 +170,10 @@ core/                 Pure calculation -- no Streamlit imports
   holidays.py         Sydney business days
   sizing.py           Step 5      Kelly -> dollars -> lots
   model.py            one computation of everything, shared by app and export
+  employment.py       full-employment z-scores, sign conventions, panel
 data/asx.py           IB and IR strips, settlement-first
 data/rba.py           statistical tables, keyless CSV
+data/abs.py           ABS Labour Force Excel time series
 state/store.py        per-meeting JSON, clone-forward
 ui/                   components, charts, theme, style
 export/report.py      Markdown mirroring the sections
@@ -143,7 +190,7 @@ a test can call directly.
 .venv/bin/python -m pytest tests -q
 ```
 
-44 tests. Beyond the golden values, they pin the things that had to be
+58 tests. Beyond the golden values, they pin the things that had to be
 re-derived rather than translated: the ACT/365 DV01s, the IB averaging window,
 IR's binary capture and its last-trading-day rule, Anzac Day never substituting
 in NSW, and the strip's refusal to invent a spot rate it cannot recover.

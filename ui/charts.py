@@ -826,3 +826,92 @@ _CPI_GAMMA = 0.65
 # ---------------------------------------------------------------------------
 # Release-prep playbook charts
 # ---------------------------------------------------------------------------
+
+
+def full_employment(rows, total_z: float | None, total_prior_z: float | None,
+                    prior_label: str, p: Palette,
+                    height: int | None = None) -> alt.LayerChart:
+    """Full-employment scorecard: each indicator's z-score at two dates.
+
+    A dot per indicator per date, not a bar. These are LEVELS on a signed
+    scale, and a bar's length from zero would invite reading the area as
+    meaningful when only the position is -- the same reason `bbsw_basis` uses
+    bars for independent readings and `priced_path` does not connect them.
+
+    A rule joins each pair so the direction of travel reads at a glance, which
+    is the whole point of plotting two dates: on the current Australian data
+    every indicator sits on the tight side of its 2000-2020 average while
+    almost every one has moved back toward it.
+
+    The Total is drawn in the same units on its own row, separated by a rule.
+    It is an unweighted mean, so it belongs on the same axis as its parts.
+    """
+    order = [r.indicator.label for r in rows] + ["Total"]
+    recs, links = [], []
+    for r in rows:
+        if not r.ok:
+            continue
+        recs.append({"label": r.indicator.label, "z": r.current.z,
+                     "when": "Current", "value": r.current.value})
+        if r.prior is not None:
+            recs.append({"label": r.indicator.label, "z": r.prior.z,
+                         "when": prior_label, "value": r.prior.value})
+            links.append({"label": r.indicator.label,
+                          "z": r.prior.z, "z2": r.current.z})
+    if total_z is not None:
+        recs.append({"label": "Total", "z": total_z, "when": "Current",
+                     "value": total_z})
+        if total_prior_z is not None:
+            recs.append({"label": "Total", "z": total_prior_z,
+                         "when": prior_label, "value": total_prior_z})
+            links.append({"label": "Total", "z": total_prior_z, "z2": total_z})
+    if not recs:
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"z": []})).mark_point()),
+                      p, height or 340)
+
+    df = pd.DataFrame(recs)
+    ldf = pd.DataFrame(links)
+    ysort = alt.SortField("order")
+    df["order"] = df["label"].map({l: i for i, l in enumerate(order)})
+    if not ldf.empty:
+        ldf["order"] = ldf["label"].map({l: i for i, l in enumerate(order)})
+
+    lo = min(-3.0, float(df["z"].min()) - 0.4)
+    hi = max(4.0, float(df["z"].max()) + 0.4)
+    xs = alt.Scale(domain=[lo, hi], nice=False)
+
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
+        color=p.ink, strokeWidth=1.2).encode(x=alt.X("x:Q", scale=xs))
+
+    connectors = (
+        alt.Chart(ldf).mark_rule(strokeWidth=1.4, opacity=0.45, color=p.muted)
+        .encode(x=alt.X("z:Q", scale=xs), x2="z2:Q",
+                y=alt.Y("label:N", sort=ysort,
+                        axis=alt.Axis(title=None, labelLimit=260)))
+        if not ldf.empty else
+        alt.Chart(pd.DataFrame({"z": [], "z2": [], "label": []})).mark_rule()
+        .encode(x=alt.X("z:Q", scale=xs)))
+
+    dots = (
+        alt.Chart(df).mark_circle(size=150, opacity=0.95)
+        .encode(
+            x=alt.X("z:Q", scale=xs,
+                    axis=alt.Axis(title="z-score vs the 2000–2020 average",
+                                  values=[-3, -2, -1, 0, 1, 2, 3, 4])),
+            # labelLimit defaults to 180px, which truncates
+            # "Vacancies-to-Unemployment" and "Medium-term Unemployment Rate"
+            # to ellipses -- and an indicator you cannot read is not plotted.
+            y=alt.Y("label:N", sort=ysort,
+                    axis=alt.Axis(title=None, labelLimit=260)),
+            color=alt.Color("when:N",
+                            scale=alt.Scale(domain=[prior_label, "Current"],
+                                            range=[p.muted, p.serious]),
+                            legend=alt.Legend(title=None, orient="bottom")),
+            tooltip=[alt.Tooltip("label:N", title="indicator"),
+                     alt.Tooltip("when:N", title="date"),
+                     alt.Tooltip("value:Q", format=".4f", title="reading"),
+                     alt.Tooltip("z:Q", format="+.2f", title="z-score")],
+        ))
+
+    n = len(order)
+    return _apply(alt.layer(zero, connectors, dots), p, height or max(300, 30 * n))
