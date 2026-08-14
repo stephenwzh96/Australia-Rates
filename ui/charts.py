@@ -845,8 +845,16 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
 
     The Total is drawn in the same units on its own row, separated by a rule.
     It is an unweighted mean, so it belongs on the same axis as its parts.
+
+    EVERY indicator keeps its row, including the ones with no data yet. Altair
+    only creates a category the data mentions, so an unscored indicator would
+    silently vanish from the axis rather than showing as an empty row -- and a
+    panel that quietly drops what it cannot measure is the wrong shape. The y
+    scale domain is pinned to the full list, and the blanks carry a muted
+    marker so an empty row reads as awaiting input rather than as a bug.
     """
     order = [r.indicator.label for r in rows] + ["Total"]
+    blanks = [{"label": r.indicator.label, "z": 0.0} for r in rows if not r.ok]
     recs, links = [], []
     for r in rows:
         if not r.ok:
@@ -871,6 +879,7 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
 
     df = pd.DataFrame(recs)
     ldf = pd.DataFrame(links)
+    bdf = pd.DataFrame(blanks)
     ysort = alt.SortField("order")
     df["order"] = df["label"].map({l: i for i, l in enumerate(order)})
     if not ldf.empty:
@@ -879,6 +888,8 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
     lo = min(-3.0, float(df["z"].min()) - 0.4)
     hi = max(4.0, float(df["z"].max()) + 0.4)
     xs = alt.Scale(domain=[lo, hi], nice=False)
+    # Pinned so unscored indicators keep their row on the axis.
+    ys = alt.Scale(domain=order)
 
     zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
         color=p.ink, strokeWidth=1.2).encode(x=alt.X("x:Q", scale=xs))
@@ -886,7 +897,7 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
     connectors = (
         alt.Chart(ldf).mark_rule(strokeWidth=1.4, opacity=0.45, color=p.muted)
         .encode(x=alt.X("z:Q", scale=xs), x2="z2:Q",
-                y=alt.Y("label:N", sort=ysort,
+                y=alt.Y("label:N", sort=ysort, scale=ys,
                         axis=alt.Axis(title=None, labelLimit=260)))
         if not ldf.empty else
         alt.Chart(pd.DataFrame({"z": [], "z2": [], "label": []})).mark_rule()
@@ -901,7 +912,7 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
             # labelLimit defaults to 180px, which truncates
             # "Vacancies-to-Unemployment" and "Medium-term Unemployment Rate"
             # to ellipses -- and an indicator you cannot read is not plotted.
-            y=alt.Y("label:N", sort=ysort,
+            y=alt.Y("label:N", sort=ysort, scale=ys,
                     axis=alt.Axis(title=None, labelLimit=260)),
             color=alt.Color("when:N",
                             scale=alt.Scale(domain=[prior_label, "Current"],
@@ -913,5 +924,16 @@ def full_employment(rows, total_z: float | None, total_prior_z: float | None,
                      alt.Tooltip("z:Q", format="+.2f", title="z-score")],
         ))
 
+    awaiting = (
+        alt.Chart(bdf).mark_text(text="awaiting data", align="left", dx=6,
+                                 fontSize=10, fontStyle="italic", color=p.muted)
+        .encode(x=alt.X("z:Q", scale=xs),
+                y=alt.Y("label:N", sort=ysort, scale=ys,
+                        axis=alt.Axis(title=None, labelLimit=260)))
+        if not bdf.empty else
+        alt.Chart(pd.DataFrame({"z": [], "label": []})).mark_text()
+        .encode(x=alt.X("z:Q", scale=xs)))
+
     n = len(order)
-    return _apply(alt.layer(zero, connectors, dots), p, height or max(300, 30 * n))
+    return _apply(alt.layer(zero, connectors, dots, awaiting), p,
+                  height or max(300, 30 * n))

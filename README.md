@@ -121,9 +121,23 @@ source's own rounding:
 
 Three — firms reporting labour constraints, employment intentions (NAB Business
 Survey) and job ads as a share of the labour force (ANZ-Indeed) — are commercial
-with no free feed. They take a typed reading plus the window mean and standard
-deviation. A z cannot be typed directly on purpose: nothing on screen would show
-what it had been measured against, and it would not move when the reading did.
+with no free feed, and they **keep their rows on the chart marked "awaiting
+data"** rather than disappearing. A panel that quietly drops what it cannot
+measure is the wrong shape: the gap should be visible.
+
+They take a typed reading plus the window mean and standard deviation. A z
+cannot be typed directly on purpose: nothing on screen would show what it had
+been measured against, and it would not move when the reading did.
+
+The search for a free substitute came up empty and the negative result is worth
+recording. All 71 RBA statistical tables republish exactly two NAB series —
+business conditions (`GICNBC`) and business inflation expectations (`GBUSEXP`) —
+and neither is what this panel needs. Trading Economics discontinued its guest
+API tier (HTTP 410), and it licenses these series from NAB and ANZ anyway, so
+going through it would not confer a licence. Jobs and Skills Australia's
+Internet Vacancy Index is a genuinely free monthly job-ads series and the
+natural substitute, but it blocks automated access. The honest place for these
+three is a typed field fed from a terminal that already licences them.
 
 Two things the tab surfaces rather than hides. The **two ABS releases sit on
 different months** — headline Labour Force at June 2026, Detailed still at March
