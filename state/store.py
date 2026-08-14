@@ -134,6 +134,55 @@ def clone_forward(source_key: str, target: dict[str, Any], as_of: date) -> dict[
     return out
 
 
+# Seeded on every new meeting so the two-strikes rule has something to count.
+# The first three are wired to RBA table F1 and colour themselves; the rest are
+# manual toggles, because no free Australian series publishes them daily.
+#
+# Chosen for Australia rather than translated from the US list. Brent and the
+# 5y5y breakeven drive the US version because a Fed thesis dies on an oil shock
+# or an expectations un-anchoring; an RBA thesis is more often killed by the
+# labour market or the exchange rate, and Australia has no liquid inflation
+# breakeven to read expectations off at all.
+DEFAULT_KILL_CRITERIA: tuple[dict[str, Any], ...] = (
+    {"label": "3-month BBSW/cash spread blows out",
+     "comparator": "above", "threshold": 45.0, "series": "BBSW_CASH_SPREAD",
+     "unit": "bp", "triggered": False,
+     "note": "Bank funding stress. Widens the wedge between what you are "
+             "trading and the policy rate you have a view on."},
+    {"label": "Cash rate trades away from target",
+     "comparator": "above", "threshold": 3.0, "series": "CASH_GAP_ABS",
+     "unit": "bp", "triggered": False,
+     "note": "AONIA normally sits on the target under ample reserves. A "
+             "persistent gap means IB is settling on something other than "
+             "the rate you are forecasting."},
+    {"label": "3-month BBSW moves more than 25bp in a fortnight",
+     "comparator": "above", "threshold": 25.0, "series": "BBSW_14D_MOVE",
+     "unit": "bp", "triggered": False,
+     "note": "The short end has repriced without you. Whatever your q was, "
+             "it was set against a different curve."},
+    {"label": "Trimmed mean CPI surprises by more than 0.3pp",
+     "comparator": "manual", "threshold": None, "series": None,
+     "unit": "pp", "triggered": False,
+     "note": "The RBA targets the trimmed mean. Quarterly, so this fires "
+             "rarely and hard."},
+    {"label": "Unemployment rate moves 0.3pp from the RBA's forecast",
+     "comparator": "manual", "threshold": None, "series": None,
+     "unit": "pp", "triggered": False,
+     "note": "Full employment is half the mandate. Set against the latest "
+             "SMP forecast, not the last print."},
+    {"label": "AUD/USD moves more than 5% in a month",
+     "comparator": "manual", "threshold": None, "series": None,
+     "unit": "%", "triggered": False,
+     "note": "A big currency move does the RBA's work for it, or undoes it. "
+             "Matters more here than for a closed economy."},
+    {"label": "Governor or Deputy signals a change of stance",
+     "comparator": "manual", "threshold": None, "series": None,
+     "unit": "", "triggered": False,
+     "note": "Only two voices reliably move the curve. Outside the blackout, "
+             "a speech can reprice the meeting on its own."},
+)
+
+
 def new_meeting(target: dict[str, Any], as_of: date, roster: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """A blank meeting when there is nothing to clone from."""
     end = date.fromisoformat(target["end"])
@@ -144,7 +193,7 @@ def new_meeting(target: dict[str, Any], as_of: date, roster: list[dict[str, Any]
         "label": end.strftime("%B %Y"),
         "roster": roster if roster is not None else load_roster(),
         "trade": {
-            "instrument": "FOMC-dated OIS", "instrument_kind": "ois",
+            "instrument": "RBA-dated OIS", "instrument_kind": "ois",
             "direction": "hike", "side": "fade",
             # sizing conventions live under "sizing"; see core.sizing
             "points": None, "size": 25.0,
@@ -153,7 +202,8 @@ def new_meeting(target: dict[str, Any], as_of: date, roster: list[dict[str, Any]
         },
         "probability": {"mode": "decomposition", "p_bloc": 0.25, "p_centre": 0.40, "override_q": None},
         "sizing": {"max_drawdown": 250_000.0, "daily_limit": 50_000.0,
-                   "bets_per_year": 8, "contract": "zq", "custom_dv01": None},
+                   "bets_per_year": 8, "contract": "ib", "custom_dv01": None,
+                   "contract_yield": None},
         "sensitivity_grid": [0.05, 0.10, 0.15, 0.20, 0.25, 0.40],
         "kelly_grid": [0.10, 0.15, 0.20, 0.25],
         "centre_grid": [0.20, 0.30, 0.40, 0.50],
@@ -163,7 +213,7 @@ def new_meeting(target: dict[str, Any], as_of: date, roster: list[dict[str, Any]
                  "no_move_target_hit": 0, "no_move_never_breached": 0,
                  "no_move_falsely_stopped": 0, "move_target_hit": 0,
                  "move_stopped_early": 0, "move_gapped_through": 0, "note": ""},
-        "kill_criteria": [],
+        "kill_criteria": [dict(k) for k in DEFAULT_KILL_CRITERIA],
         "structure": {"spread_enabled": True, "spread_note": "", "far_leg_points": None,
                       "far_leg_size": 25.0, "scenarios": [], "calendar": [],
                       "calendar_note": "", "checklist": []},

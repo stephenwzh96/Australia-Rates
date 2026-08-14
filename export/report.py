@@ -36,7 +36,7 @@ def near_leg_pnl(token: str, m: Model) -> str:
 
 def render(m: Model) -> str:
     if not m.priced:
-        return (f"# {m.label} FOMC -- not yet priced\n\n"
+        return (f"# {m.label} RBA -- not yet priced\n\n"
                 f"No points priced recorded for the {m.meeting.label} meeting.\n")
 
     s = m.summary
@@ -45,7 +45,7 @@ def render(m: Model) -> str:
     L = [
         f"# Framework: Assessing an Event-Priced {'Receive' if m.side == 'fade' else 'Pay'} Trade",
         "",
-        f"{m.label} FOMC, {m.meeting.label}. Prepared {m.as_of:%d %b %Y}"
+        f"{m.label} RBA Monetary Policy Board, {m.meeting.label}. Prepared {m.as_of:%d %b %Y}"
         f" ({m.days_to_meeting} days to the decision).",
         f"Instrument: **{m.instrument or 'unspecified'}**. "
         f"You {verb} a {m.size:g}bp {move} priced at {m.points:g} points.",
@@ -74,7 +74,7 @@ def render(m: Model) -> str:
         L.append(f"| **{o.label}** | {o.settles_at:g}bp | **{o.pnl:+g}bp** |")
     L += [
         "",
-        f"Max loss is capped at {abs(s.loss):g} because the Fed cannot move more than "
+        f"Max loss is capped at {abs(s.loss):g} because the RBA cannot move more than "
         f"{m.size:g}bp at this meeting.", "",
         "---", "",
         "## Step 3 -- Expected value", "",
@@ -134,27 +134,27 @@ def render(m: Model) -> str:
         spec = sizing.contract_for(m.contract_key, m.as_of)
         L += [
             "### In DV01, lots and dollars", "",
-            f"Kelly bankroll is the ${m.max_drawdown:,.0f} max drawdown; the "
-            f"${m.daily_limit:,.0f} daily limit vetoes rather than sizes. "
-            f"**{spec.label}** at ${m.dv01:,.2f} per bp per lot"
-            + (f" (${m.quoted_dv01:,.2f} quoted, corrected for {m.capture:.0%} capture "
+            f"Kelly bankroll is the A${m.max_drawdown:,.0f} max drawdown; the "
+            f"A${m.daily_limit:,.0f} daily limit vetoes rather than sizes. "
+            f"**{spec.label}** at A${m.dv01:,.2f} per bp per lot"
+            + (f" (A${m.quoted_dv01:,.2f} quoted, corrected for {m.capture:.0%} capture "
                f"of the move)" if m.capture < 1.0 - 1e-9 else "")
-            + f" (${lad.loss_per_contract:,.2f} lost per lot in the bad state, so the daily "
+            + f" (A${lad.loss_per_contract:,.2f} lost per lot in the bad state, so the daily "
             f"limit allows at most {lad.daily_cap_contracts:,} lots). "
             f"Full Kelly is {lad.f_star:.0%} of the bankroll"
             + (f"; growth reaches zero at {lad.zero_growth_f:.0%}."
                if lad.zero_growth_f else "."),
             "",
-            "| Kelly | f | Max loss | DV01 risk/bp | Lots | Expected $ | Max gain | "
-            "g/bet | % of full | Annualised | Daily | Growth / $10k |",
+            "| Kelly | f | Max loss | DV01 risk/bp | Lots | Expected A$ | Max gain | "
+            "g/bet | % of full | Annualised | Daily | Growth / A$10k |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for r in lad.rungs:
             mark = " **<-**" if r.is_selected else ""
             L.append(
-                f"| {r.label}{mark} | {r.f:.1%} | ${r.max_loss:,.0f} "
-                f"| ${r.position_dv01:,.0f} | {r.contracts:,} | ${r.expected_pnl:,.0f} "
-                f"| ${r.max_gain:,.0f} | {r.growth * 100:.2f}% | {r.growth_share:.1%} "
+                f"| {r.label}{mark} | {r.f:.1%} | A${r.max_loss:,.0f} "
+                f"| A${r.position_dv01:,.0f} | {r.contracts:,} | A${r.expected_pnl:,.0f} "
+                f"| A${r.max_gain:,.0f} | {r.growth * 100:.2f}% | {r.growth_share:.1%} "
                 f"| {r.annualised:.1%} | {'pass' if r.within_daily_limit else '**BREACH**'} "
                 f"| {'--' if r.growth_per_10k is None else f'{r.growth_per_10k * 100:.1f}pp'} |")
         L += ["",
@@ -164,7 +164,7 @@ def render(m: Model) -> str:
               "rather than being shrunk to fit -- the limit is a veto, not a sizing input.", ""]
         if lad.breaches:
             names = ", ".join(r.label for r in lad.breaches)
-            L += [f"> **Breaches the ${m.daily_limit:,.0f} daily limit: {names}.** "
+            L += [f"> **Breaches the A${m.daily_limit:,.0f} daily limit: {names}.** "
                   + (f"Largest rung that fits: {lad.largest_within_limit.label}."
                      if lad.largest_within_limit else ""), ""]
 
@@ -189,7 +189,7 @@ def render(m: Model) -> str:
             head, rule = head + " Price |", rule + "---|"
         head, rule = head + " P&L |", rule + "---|"
         if has_pnl:
-            head, rule = head + " P&L ($) |", rule + "---|"
+            head, rule = head + " P&L (A$) |", rule + "---|"
         L += ["", "### Exit map", "", head, rule]
         for x in m.exit_levels:
             cells = [x.label, _pct(x.implied, 0), f"{x.level:g}bp"]
@@ -269,7 +269,8 @@ def render(m: Model) -> str:
         f"   =  {_pct(d.q)}",
         "```", "",
         "Useful because it separates the observable from the decisive. The bloc's behaviour",
-        "is broadly readable from speeches. The centre's is not, and the centre settles the",
+        "is broadly readable from speeches -- though the RBA never attributes a vote, so this",
+        "is your read and cannot be scored against a published tally. The centre settles the",
         "contract.", "",
         "### Conditional EV -- the bloc already voted yes", "",
         "| P(centre joins) | EV given the bloc already voted yes |", "|---|---|",
@@ -309,7 +310,7 @@ def render(m: Model) -> str:
     opens, closes = m.blackout
     L += ["", "## 3. Blackout", "",
           f"Blackout runs {opens:%d %b} to {closes:%d %b}. "
-          + ("**You are inside it** -- no further Fed signal is available before settlement; "
+          + ("**You are inside it** -- no further RBA signal is available before settlement; "
              "the remaining channel is a press trial balloon."
              if m.in_blackout else
              f"It opens in {(opens - m.as_of).days} days."), ""]
@@ -324,8 +325,8 @@ def render(m: Model) -> str:
         L.append("")
 
     L += ["## 5. The statement, not the decision", "",
-          f"{'There is a SEP at this meeting' if m.meeting.has_sep else 'There is no SEP at this meeting'}"
-          f" -- {'dots can anchor or disrupt the strip' if m.meeting.has_sep else 'no dots, so the statement and presser do all the work'}.",
+          f"{'A Statement on Monetary Policy lands with this decision' if m.meeting.has_smp else 'No SMP at this meeting'}"
+          f" -- {'a full forecast round can anchor or disrupt the strip' if m.meeting.has_smp else 'so the statement wording and the press conference do all the work'}.",
           ""]
     scen = struct.get("scenarios") or []
     if scen:
@@ -345,6 +346,6 @@ def render(m: Model) -> str:
         L.append("")
 
     L += ["", "---", "",
-          f"*Generated {datetime.now():%Y-%m-%d %H:%M} from the FOMC event-pricing "
+          f"*Generated {datetime.now():%Y-%m-%d %H:%M} from the RBA event-pricing "
           "dashboard.*", ""]
     return "\n".join(L)

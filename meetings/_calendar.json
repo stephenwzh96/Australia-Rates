@@ -1,0 +1,85 @@
+{
+  "source": "rba.gov.au/schedules-events/board-meeting-schedules.html, fetched 2026-08-14",
+  "meetings": [
+    {
+      "start": "2026-02-02",
+      "end": "2026-02-03",
+      "verified": true
+    },
+    {
+      "start": "2026-03-16",
+      "end": "2026-03-17",
+      "verified": true
+    },
+    {
+      "start": "2026-05-04",
+      "end": "2026-05-05",
+      "verified": true
+    },
+    {
+      "start": "2026-06-15",
+      "end": "2026-06-16",
+      "verified": true
+    },
+    {
+      "start": "2026-08-10",
+      "end": "2026-08-11",
+      "verified": true
+    },
+    {
+      "start": "2026-09-28",
+      "end": "2026-09-29",
+      "verified": true
+    },
+    {
+      "start": "2026-11-02",
+      "end": "2026-11-03",
+      "verified": true
+    },
+    {
+      "start": "2026-12-07",
+      "end": "2026-12-08",
+      "verified": true
+    },
+    {
+      "start": "2027-02-08",
+      "end": "2027-02-09",
+      "verified": true
+    },
+    {
+      "start": "2027-03-22",
+      "end": "2027-03-23",
+      "verified": true
+    },
+    {
+      "start": "2027-05-03",
+      "end": "2027-05-04",
+      "verified": true
+    },
+    {
+      "start": "2027-06-21",
+      "end": "2027-06-22",
+      "verified": true
+    },
+    {
+      "start": "2027-08-09",
+      "end": "2027-08-10",
+      "verified": true
+    },
+    {
+      "start": "2027-09-27",
+      "end": "2027-09-28",
+      "verified": true
+    },
+    {
+      "start": "2027-11-01",
+      "end": "2027-11-02",
+      "verified": true
+    },
+    {
+      "start": "2027-12-13",
+      "end": "2027-12-14",
+      "verified": true
+    }
+  ]
+}

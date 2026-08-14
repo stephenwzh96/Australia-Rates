@@ -1,7 +1,16 @@
 """Step 5 -- from a Kelly fraction to a lot count, via the position's DV01.
 
-Reconciled cell-for-cell against the desk spreadsheet (FFV6 / Sep 2026: receive
-18 on a 25bp event at q = 50%, $250k max drawdown, $50k daily limit, ZQ DV01).
+The arithmetic here is jurisdiction-free -- a Kelly fraction times a bankroll
+divided by a DV01 is the same chain in any currency -- so only the contract
+table below changed in the port. Two Australian specifics do change the
+numbers it produces:
+
+  * ACT/365, so IB's value per basis point is A$24.66 rather than the A$25.00
+    a 360 basis would give.
+  * IR's DV01 is NOT a constant. A bank bill is priced by discounting, so its
+    bp value drifts with the level (A$24.30 at 3%, A$23.94 at 6%), where the
+    US contract it replaces is a flat $25.00 by construction. `dv01_for` takes
+    a live yield for that reason.
 
 TWO RISK NUMBERS, NOT ONE
 -------------------------
@@ -47,6 +56,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Sequence
 
+from . import contracts as _contracts
 from .pricing import (Side, expected_value, kelly_fraction, max_gain, max_loss,
                       net_odds)
 
@@ -54,12 +64,17 @@ from .pricing import (Side, expected_value, kelly_fraction, max_gain, max_loss,
 # Contract specifications
 # --------------------------------------------------------------------------
 
-FED_FUNDS_DV01 = 5_000_000 * 0.0001 * 30 / 360      # ZQ  -> 41.667
-SOFR_3M_DV01 = 1_000_000 * 0.0001 * 90 / 360        # SR3 -> 25.00
+# Both from `core.contracts`, which derives them from the ASX specifications
+# on an ACT/365 basis. IB is fixed at A$24.66; IR is level-dependent because a
+# bank bill is priced by discounting, so it is quoted at a reference yield here
+# and recomputed against the live curve wherever one is available.
+IB_DV01 = _contracts.ib_dv01()                       # A$24.66, fixed
+IR_REFERENCE_YIELD = 4.5                             # only a fallback -- see `dv01_for`
+IR_DV01 = _contracts.ir_dv01(IR_REFERENCE_YIELD)     # A$~24.12 at 4.5%
 
-DEFAULT_MAX_DRAWDOWN = 250_000.0
-DEFAULT_DAILY_LIMIT = 50_000.0
-DEFAULT_BETS_PER_YEAR = 8                            # eight scheduled FOMC meetings
+DEFAULT_MAX_DRAWDOWN = 250_000.0                     # A$
+DEFAULT_DAILY_LIMIT = 50_000.0                       # A$
+DEFAULT_BETS_PER_YEAR = 8                            # eight scheduled RBA meetings
 
 # At exactly breakeven f* solves to floating-point residue (~5e-17) rather than
 # a clean zero, which is enough to slip past a `<= 0` guard and produce a ladder
@@ -70,8 +85,8 @@ EDGE_EPSILON = 1e-9
 DEFAULT_FRACTIONS: tuple[float, ...] = (0.25, 1.0 / 3.0, 0.5, 1.0)
 
 
-FF_STRIP_MONTHS = 18            # matches data.asx.STRIP_MONTHS
-SR3_STRIP_QUARTERS = 10         # matches data.asx.SOFR_QUARTERS
+IB_STRIP_MONTHS = 18            # matches the live ASX IB strip depth
+IR_STRIP_QUARTERS = 12          # the ASX IR strip runs deeper than IB
 QUARTERLY_MONTHS = (3, 6, 9, 12)
 
 
@@ -81,59 +96,57 @@ class Contract:
     label: str
     dv01: float
     note: str
-    kind: str = "ff"            # "ff" | "sr3" | "custom"
+    kind: str = "ib"            # "ib" | "ir" | "custom"
     month: date | None = None
 
 
 CUSTOM_CONTRACT = Contract("custom", "Custom DV01", 0.0,
                            "Type the DV01 per lot.", kind="custom")
 
-# Legacy keys from before the dropdown listed real contracts.
+# Family-level keys, kept so a saved meeting that predates the per-contract
+# dropdown still resolves.
 LEGACY_CONTRACTS: dict[str, Contract] = {
-    "zq": Contract("zq", "Fed funds futures (ZQ)", FED_FUNDS_DV01,
-                   "$5,000,000 notional, 30/360.", kind="ff"),
-    "sr3": Contract("sr3", "3M SOFR futures (SR3)", SOFR_3M_DV01,
-                    "$1,000,000 notional, 90/360.", kind="sr3"),
+    "ib": Contract("ib", "30 day interbank cash rate futures (IB)", IB_DV01,
+                   "A$3,000,000 notional, 30/365.", kind="ib"),
+    "ir": Contract("ir", "90 day bank bill futures (IR)", IR_DV01,
+                   "A$1,000,000 face, 90/365.", kind="ir"),
     "custom": CUSTOM_CONTRACT,
 }
 
 
-def _ff_contract(month: date) -> Contract:
-    from .contracts import month_code
-    code = f"FF{month_code(month)}{month.year % 10}"
+def _ib_contract(month: date) -> Contract:
     return Contract(
-        key=f"ff:{month:%Y-%m}", label=f"{code} — {month:%b %Y}",
-        dv01=FED_FUNDS_DV01,
-        note="$5,000,000 notional, 30/360 -- $41.67 per bp per lot. "
-             "1-month SOFR (SR1) carries the same DV01.",
-        kind="ff", month=month,
+        key=f"ib:{month:%Y-%m}", label=f"{_contracts.ib_contract_code(month)} — {month:%b %Y}",
+        dv01=IB_DV01,
+        note="A$3,000,000 notional, 30/365 -- A$24.66 per bp per lot, fixed. "
+             "Settles on the average cash rate across the delivery month.",
+        kind="ib", month=month,
     )
 
 
-def _sr3_contract(month: date) -> Contract:
-    from .contracts import month_code
-    code = f"SR3{month_code(month)}{month.year % 10}"
+def _ir_contract(month: date) -> Contract:
     return Contract(
-        key=f"sr3:{month:%Y-%m}", label=f"{code} — {month:%b %Y} IMM",
-        dv01=SOFR_3M_DV01,
-        note="$1,000,000 notional, 90/360 -- $25.00 per bp per lot.",
-        kind="sr3", month=month,
+        key=f"ir:{month:%Y-%m}", label=f"{_contracts.ir_contract_code(month)} — {month:%b %Y}",
+        dv01=IR_DV01,
+        note="A$1,000,000 face, 90/365 -- about A$24 per bp per lot, but the "
+             "bank bill discount formula makes it level-dependent, so the live "
+             "yield sets it. Settles on one 3-month BBSW fix.",
+        kind="ir", month=month,
     )
 
 
 def contract_universe(anchor: date,
-                      ff_months: int = FF_STRIP_MONTHS,
-                      sr3_quarters: int = SR3_STRIP_QUARTERS) -> list[Contract]:
+                      ib_months: int = IB_STRIP_MONTHS,
+                      ir_quarters: int = IR_STRIP_QUARTERS) -> list[Contract]:
     """Every contract the Curve tab quotes, nearest delivery first.
 
-    The same 18 fed funds months and 10 SOFR quarters the strip is built from,
-    so the sizing dropdown cannot offer an instrument the curve has no price
-    for. Codes are generated from the calendar rather than the live quotes:
+    The same 18 IB months and 12 IR quarters the strips are built from, so the
+    sizing dropdown cannot offer an instrument the curve has no price for. Codes are generated from the calendar rather than the live quotes:
     a dropdown should not need the network to populate, and it must render
     identically whether or not the strip fetch succeeded.
 
     Sorted by delivery month ascending -- nearest to `anchor` first -- with the
-    fed funds contract ahead of the SOFR one when both land in the same month.
+    IB contract ahead of the IR one when both land in the same month.
     """
     from .contracts import add_month
 
@@ -141,18 +154,18 @@ def contract_universe(anchor: date,
     out: list[Contract] = []
 
     m = first
-    for _ in range(max(0, ff_months)):
-        out.append(_ff_contract(m))
+    for _ in range(max(0, ib_months)):
+        out.append(_ib_contract(m))
         m = add_month(m)
 
     q = first
     while q.month not in QUARTERLY_MONTHS:
         q = add_month(q)
-    for _ in range(max(0, sr3_quarters)):
-        out.append(_sr3_contract(q))
+    for _ in range(max(0, ir_quarters)):
+        out.append(_ir_contract(q))
         q = add_month(add_month(add_month(q)))
 
-    out.sort(key=lambda c: (c.month, 0 if c.kind == "ff" else 1))
+    out.sort(key=lambda c: (c.month, 0 if c.kind == "ib" else 1))
     return out
 
 
@@ -171,20 +184,27 @@ def contract_for(key: str, anchor: date | None = None) -> Contract:
             month = date.fromisoformat(f"{stamp}-01")
         except ValueError:
             return CUSTOM_CONTRACT
-        return _sr3_contract(month) if kind == "sr3" else _ff_contract(month)
+        return _ir_contract(month) if kind == "ir" else _ib_contract(month)
     return CUSTOM_CONTRACT
 
 
-def dv01_for(key: str, custom: float | None = None) -> float:
+def dv01_for(key: str, custom: float | None = None,
+             yield_pct: float | None = None) -> float:
     """DV01 per lot. Keyed off the contract family, so a rolled-off month still
-    prices correctly rather than silently falling back to fed funds."""
+    prices correctly rather than silently falling back to the wrong instrument.
+
+    `yield_pct` matters only for IR, and only because a bank bill is a discount
+    security: its bp value moves with the level, unlike IB's fixed A$24.66 and
+    unlike the flat $25.00 of the SOFR contract this replaces. Pass the live
+    yield off the curve; without one it falls back to `IR_REFERENCE_YIELD`,
+    which is right to about 1.5% across a plausible rate range.
+    """
     if key == "custom":
         return float(custom or 0.0)
-    if key.startswith("sr3"):
-        return SOFR_3M_DV01
-    if key.startswith("ff") or key == "zq":
-        return FED_FUNDS_DV01
-    return FED_FUNDS_DV01
+    if key.startswith("ir"):
+        return _contracts.ir_dv01(yield_pct if yield_pct is not None
+                                  else IR_REFERENCE_YIELD)
+    return IB_DV01
 
 
 def fraction_label(multiple: float) -> str:
@@ -326,7 +346,7 @@ class SizingLadder:
 
 def build_ladder(points: float, size: float, q: float, side: Side = "fade",
                  max_drawdown: float = DEFAULT_MAX_DRAWDOWN,
-                 dv01: float = FED_FUNDS_DV01,
+                 dv01: float = IB_DV01,
                  daily_limit: float = DEFAULT_DAILY_LIMIT,
                  bets_per_year: int = DEFAULT_BETS_PER_YEAR,
                  fractions: Sequence[float] = DEFAULT_FRACTIONS,

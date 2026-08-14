@@ -105,13 +105,11 @@ def _f(x: Any) -> float | None:
 
 def build(state: dict[str, Any],
           as_of: date | None = None,
-          fred_values: dict[str, float | None] | None = None,
-          fred_units: dict[str, str] | None = None,
+          rba_values: dict[str, float | None] | None = None,
+          rba_units: dict[str, str] | None = None,
           all_meetings: list[Meeting] | None = None,
-          fred_history: dict[str, list[tuple[date, float]]] | None = None,
-          contract_history: list[tuple[date, float]] | None = None,
-          contract_symbol: str | None = None,
-          release_dates: dict[str, list[date]] | None = None) -> Model:
+          rate_history: list[tuple[date, float]] | None = None,
+          rate_symbol: str | None = None) -> Model:
     trade = state.get("trade", {})
     prob = state.get("probability", {})
     pth = state.get("path", {})
@@ -127,27 +125,25 @@ def build(state: dict[str, Any],
     calendar_start = when - timedelta(days=econ_calendar.LOOKBACK_DAYS)
     calendar_events = econ_calendar.merged_calendar(
         calendar_start, meeting.end, state.get("structure", {}).get("calendar") or [],
-        meetings, release_dates)
-    if fred_history:
-        calendar_events = econ_calendar.attach_actuals(calendar_events, fred_history, when)
+        meetings)
 
     # Volatility shape is estimated over the CONTRACT's own history, which
     # reaches much further back than the calendar shown on screen -- see
     # `core.volatility` for why level and shape take different windows.
     quiet_sigma_price: float | None = None
     multipliers: dict[str, volatility.Multiplier] = {}
-    if contract_history:
-        h0, h1 = contract_history[0][0], contract_history[-1][0]
+    if rate_history:
+        h0, h1 = rate_history[0][0], rate_history[-1][0]
         # Keyed on the REPORT, not the series: three Employment Situation
         # lines on one Friday are one shock, and summing their excess
         # variance would treat a single report as three independent ones.
         hist_events = [(e.when, e.release)
-                       for e in econ_calendar.recurring_events(h0, h1, meetings, release_dates)
+                       for e in econ_calendar.recurring_events(h0, h1, meetings)
                        if e.release]
         decision_days = ({m.end for m in meetings}
                          | {m.end + timedelta(days=1) for m in meetings})
         quiet_sigma_price, multipliers, quiet_observations = volatility.estimate_from_history(
-            contract_history, hist_events, decision_days)
+            rate_history, hist_events, decision_days)
 
     points = _f(trade.get("points"))
     size = _f(trade.get("size")) or 25.0
@@ -163,7 +159,7 @@ def build(state: dict[str, Any],
 
     warnings: list[str] = []
     if not meeting.verified:
-        warnings.append("Meeting date is unverified - confirm against federalreserve.gov.")
+        warnings.append("Meeting date is unverified - confirm against rba.gov.au.")
     if prob.get("mode") == "decomposition" and override is not None and not decomposition.reconciles:
         warnings.append(
             f"Decomposition gives {decomposition.q:.1%} but the recorded estimate is {override:.1%}. "
@@ -181,9 +177,12 @@ def build(state: dict[str, Any],
         daily_limit = _f(sizing_state.get("risk_budget")) or sizing.DEFAULT_DAILY_LIMIT
     bets_per_year = int(_f(sizing_state.get("bets_per_year"))
                         or sizing.DEFAULT_BETS_PER_YEAR)
-    contract_key = sizing_state.get("contract") or "zq"
+    contract_key = sizing_state.get("contract") or "ib"
     contract_spec = sizing.contract_for(contract_key, when)
-    quoted_dv01 = sizing.dv01_for(contract_key, _f(sizing_state.get("custom_dv01")))
+    # The live yield only matters for IR, whose bp value moves with the level;
+    # `dv01_for` falls back to a reference yield when the curve is unavailable.
+    quoted_dv01 = sizing.dv01_for(contract_key, _f(sizing_state.get("custom_dv01")),
+                                  yield_pct=_f(sizing_state.get("contract_yield")))
     contract_label = contract_spec.label
 
     # CAPTURE. The quoted DV01 is dollars per bp of the CONTRACT's own price;
@@ -197,13 +196,16 @@ def build(state: dict[str, Any],
     # left at 1 and a warning is raised instead of quoting a wild number.
     capture = contracts.contract_capture_share(
         contract_spec.kind, contract_spec.month, meeting.end)
+    # IR capture is binary by construction -- one fix, so the contract either
+    # sees the decision or it does not (see `core.contracts`). A 0.0 there is
+    # not "a bit of the move", it is the wrong contract entirely.
     capture_usable = capture >= contracts.CAPTURE_WARNING_THRESHOLD
     dv01 = quoted_dv01 * capture if capture_usable else quoted_dv01
     if capture_usable and capture < 1.0 - 1e-9:
         warnings.append(
             f"{contract_label} captures {capture:.1%} of a {meeting.label} move, so its "
-            f"DV01 per bp of the event is corrected from ${quoted_dv01:,.2f} to "
-            f"${dv01:,.2f} - lot counts and the exit-map price column below use the "
+            f"DV01 per bp of the event is corrected from A${quoted_dv01:,.2f} to "
+            f"A${dv01:,.2f} - lot counts and the exit-map price column below use the "
             "corrected figure."
         )
     elif not capture_usable:
@@ -238,8 +240,8 @@ def build(state: dict[str, Any],
                 sizing.snap_fraction(kf)).within_daily_limit:
             warnings.append(
                 f"{sizing.fraction_label(sizing.snap_fraction(kf))} Kelly risks "
-                f"${sizing_ladder.selected.max_loss:,.0f} against a "
-                f"${daily_limit:,.0f} daily limit - that is a breach, not a size."
+                f"A${sizing_ladder.selected.max_loss:,.0f} against a "
+                f"A${daily_limit:,.0f} daily limit - that is a breach, not a size."
             )
         conditional = votes.conditional_ev(points, size, side,
                                            state.get("centre_grid", (0.20, 0.30, 0.40, 0.50)))
@@ -295,7 +297,7 @@ def build(state: dict[str, Any],
             # per bp of event has correspondingly smaller price vol, so
             # dividing recovers the level the event itself moves.
             vol_estimate = montecarlo.VolEstimate(
-                quiet_sigma_price / capture, "historical", symbol=contract_symbol,
+                quiet_sigma_price / capture, "historical", symbol=rate_symbol,
                 observations=quiet_observations,
                 capture=capture)
 
@@ -369,7 +371,7 @@ def build(state: dict[str, Any],
     if not roster:
         warnings.append("No roster on this meeting - the vote arithmetic is empty.")
 
-    criteria = kills.from_dicts(state.get("kill_criteria", []), fred_values, fred_units)
+    criteria = kills.from_dicts(state.get("kill_criteria", []), rba_values, rba_units)
     assessment = kills.assess(criteria)
     if assessment.is_stale:
         warnings.append(

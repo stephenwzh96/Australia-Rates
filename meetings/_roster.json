@@ -1,0 +1,17 @@
+{
+  "as_of": "2026-08-14",
+  "verified": false,
+  "source": "Seat structure from the Reserve Bank Act 1959 s.10A. Names and scores NOT verified.",
+  "note": "TWO THINGS TO KNOW BEFORE TRUSTING THIS TAB. (1) The RBA publishes only an UNATTRIBUTED vote count -- 'the Board decided by six votes to three'. No member is ever named, so unlike the FOMC version of this tool, a roster here can never be scored against a published tally. It encodes your read of the Board, and that read is doing all the work. (2) Every score below is a neutral 2.5 placeholder and every seat past the first two is unfilled, deliberately: this app does not assert policy views for real people it has not sourced. Fill the names from rba.gov.au/about-rba/boards/monetary-policy-board/ and set the scores from each member's own speeches, then flip verified to true. 5 = most hawkish.",
+  "voters": [
+    {"name": "Michele Bullock",  "role": "Governor, Chair",          "bloc": "Executive", "score": 2.5, "is_mover": false, "note": "Score not set -- derive from speeches and press conferences."},
+    {"name": "Andrew Hauser",    "role": "Deputy Governor",          "bloc": "Executive", "score": 2.5, "is_mover": false, "note": "Score not set -- derive from speeches."},
+    {"name": "",                 "role": "Secretary to the Treasury", "bloc": "Ex officio", "score": 2.5, "is_mover": false, "note": "Ex officio seat. Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
+    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."}
+  ]
+}
