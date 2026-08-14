@@ -9,6 +9,7 @@ mix-up visible on screen instead of buried three steps downstream.
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -129,9 +130,20 @@ def verdict_row(key: str, value: str, colour: str | None = None, emph: bool = Fa
             f'<span class="v"{style}>{html.escape(value)}</span></div>')
 
 
+# Only emphasis is supported in a note, and it is applied post-escape.
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
 def note(text: str) -> None:
+    """An explanatory aside. `**bold**` is honoured; nothing else is.
+
+    The text is HTML-escaped first and the emphasis applied to the escaped
+    string afterwards, so the markup can only ever produce a `<strong>` -- a
+    stray angle bracket in a note stays inert rather than becoming a tag.
+    """
     if text:
-        st.markdown(f'<div class="fomc-note">{html.escape(text)}</div>', unsafe_allow_html=True)
+        body = _BOLD.sub(r"<strong>\1</strong>", html.escape(text))
+        st.markdown(f'<div class="fomc-note">{body}</div>', unsafe_allow_html=True)
 
 
 def vintage(line: str) -> None:
@@ -160,7 +172,7 @@ def section(title: str, subtitle: str = "") -> None:
 def data_source_header(name: str, ok: bool, detail: str, p: Palette) -> None:
     """One line of health for an external source: name, a coloured dot, a
     one-line detail. The Data tab's whole point is a consistent read across
-    unrelated sources (FRED, ISM, CME/Yahoo) -- a future source reuses this
+    unrelated sources (ASX, RBA) -- a future source reuses this
     instead of inventing its own status treatment."""
     dot_colour = p.good if ok else p.critical
     st.markdown(
