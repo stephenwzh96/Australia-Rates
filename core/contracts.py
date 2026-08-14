@@ -119,17 +119,27 @@ def ib_capture_share(month_start: date, effective: date) -> tuple[int, int, floa
     return days, dim, days / dim
 
 
+def ir_settlement_day(month_start: date) -> date:
+    """Settlement day for the IR contract: the second Friday of the delivery
+    month. The 90 days of bill the contract stands for run FROM here."""
+    return _nth_weekday(month_start.year, month_start.month, 4, 2)
+
+
 def ir_last_trading_day(month_start: date) -> date:
     """The IR contract's BBSW fix date.
 
-    ASX sets it as the business day immediately prior to settlement day, with
-    settlement on the second Friday of the delivery month. Derived rather than
-    read off the price feed, whose `dateExpiry` field is a vendor artifact --
-    see `data.asx`.
+    ASX sets it as the business day immediately prior to settlement day.
+    Derived rather than read off the price feed, whose `dateExpiry` field is a
+    vendor artifact -- see `data.asx`.
+
+    Distinct from `ir_settlement_day` by one business day, and the two are not
+    interchangeable: the fix is the rate the contract SETTLES ON, while
+    settlement day is when the bill it represents starts accruing. `core.bbsw`
+    needs the first for "which decisions are in the price" and the second for
+    "which 90 days the bill covers".
     """
     from . import holidays as hol
-    second_friday = _nth_weekday(month_start.year, month_start.month, 4, 2)
-    return hol.previous_business_day(second_friday)
+    return hol.previous_business_day(ir_settlement_day(month_start))
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:

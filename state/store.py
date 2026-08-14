@@ -231,15 +231,30 @@ def load_or_seed(key: str, meetings: list[dict[str, Any]], today: date) -> dict[
     Lives here rather than in the app so the meeting-switch path is testable
     without standing up Streamlit.
     """
+    state = None
     if exists(key):
-        state = load(key)
-    else:
+        # A meeting file that is corrupt, hand-edited or written by an older
+        # schema must not wedge the app. `build` reads `state["meeting"]`
+        # unguarded, so a missing key there raises on EVERY rerun and the only
+        # way out is deleting the file by hand. Falling through to a fresh
+        # meeting keeps the app usable; `_recovered` tells the UI to say so
+        # rather than silently discarding what was on disk.
+        try:
+            state = load(key)
+        except (OSError, ValueError, json.JSONDecodeError):
+            state = None          # unreadable or not JSON at all
+        if not isinstance(state, dict) or "meeting" not in state:
+            state = None          # readable, but not a meeting
+    if state is None:
+        recovered = exists(key)
         target = next((m for m in meetings if m.get("end") == key), None)
         prev = previous_key(key)
         if prev and target:
             state = clone_forward(prev, target, today)
         else:
             state = new_meeting(target or {"start": key, "end": key, "verified": False}, today)
+        if recovered:
+            state["_recovered"] = True
     # A meeting without a roster would silently render empty vote arithmetic.
     state.setdefault("roster", load_roster())
     return state

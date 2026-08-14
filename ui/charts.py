@@ -771,11 +771,6 @@ PAYROLL_STACK: tuple[tuple[str, str], ...] = (
 )
 
 
-def _payroll_bar_colour(key: str, p: Palette) -> str:
-    return {"priv_ex_he": p.positive, "ehs": p.accent,
-            "government": p.muted}[key]
-
-
 # ---------------------------------------------------------------------------
 # Sector wage-growth heatmap (rendered as an HTML table)
 # ---------------------------------------------------------------------------
@@ -797,27 +792,6 @@ _HEAT_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
     (0.90, (92, 142, 92)),
     (1.00, (34, 62, 43)),
 )
-
-
-def _hex_rgb(h: str) -> tuple[float, float, float]:
-    h = h.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
-
-
-def _lerp_hex(a: str, b: str, t: float) -> str:
-    ca, cb = _hex_rgb(a), _hex_rgb(b)
-    t = min(1.0, max(0.0, t))
-    return "#" + "".join(
-        f"{round((x + (y - x) * t) * 255):02x}" for x, y in zip(ca, cb))
-
-
-def _heat_colour(t: float) -> str:
-    """t in [0,1] -> RGB hex through the source's red->green gradient."""
-    for (t0, c0), (t1, c1) in zip(_HEAT_STOPS, _HEAT_STOPS[1:]):
-        if t <= t1:
-            k = (t - t0) / (t1 - t0)
-            return _lerp_hex("#%02x%02x%02x" % c0, "#%02x%02x%02x" % c1, k)
-    return "#%02x%02x%02x" % _HEAT_STOPS[-1][1]
 
 
 # ---------------------------------------------------------------------------
@@ -849,125 +823,6 @@ _CPI_CAP = 3.0
 _CPI_GAMMA = 0.65
 
 
-def _readable_ink(fill: str) -> str:
-    """Black or white on `fill`, whichever has more contrast.
-
-    Picked against the FILL rather than against the theme: these cells are
-    painted with the source's own red and blue, so a mid-tone steel blue needs
-    dark text in BOTH themes, and the saturated red needs light text in both.
-    Deciding from `Palette.ink` instead would hand light theme near-black text
-    on a dark red cell. Proper sRGB relative luminance, since the choice turns
-    on a ~4.5:1 boundary the eyeballed version straddles.
-    """
-    def channel(c: float) -> float:
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-    r, g, b = (channel(c) for c in _hex_rgb(fill))
-    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    return "#ffffff" if (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.0555) else "#111111"
-
-
-def _cpi_heat(value: float, p: Palette) -> str:
-    """Signed value -> cell fill, blended out of the theme's own surface.
-
-    Blending from `p.surface` rather than from white keeps the light theme
-    pixel-faithful to the source (whose ground IS white) while letting the
-    dark theme darken the neutral end instead of stamping a white grid onto a
-    dark page. Both themes keep the source's red and blue arms.
-    """
-    t = min(1.0, abs(value) / _CPI_CAP) ** _CPI_GAMMA
-    return _lerp_hex(p.surface, _CPI_HOT if value >= 0 else _CPI_COLD, t)
-
-
 # ---------------------------------------------------------------------------
 # Release-prep playbook charts
 # ---------------------------------------------------------------------------
-
-def playbook_levels(
-    outcomes: list, entry: float, market_bp: float | None,
-    fair: float, size: float, p: Palette,
-    receive_level: float | None = None,
-    height: int = 150,
-) -> alt.LayerChart:
-    """Horizontal bp axis (0–size) with pay, receive, market, fair and the
-    three post-print scenario levels — one glance at the risk/reward layout.
-
-    Reference markers (pay / receive / market / fair) sit on the bottom row,
-    the scenario outcomes on the row above: a dovish outcome routinely lands
-    almost exactly on the pay level, and base exactly on the market, so one
-    row would pile the dots into a single blob. The receive marker only draws
-    when the card prices a receive leg.
-    """
-    rows: list[dict] = []
-    for label, level, kind in (
-        ("Pay", entry, "entry"),
-        ("Receive", receive_level, "receive"),
-        ("Market", market_bp, "market"),
-        ("Fair (q)", fair, "reference"),
-    ):
-        if level is None:
-            continue
-        rows.append({"label": label, "level": level, "kind": kind, "row": 0.0})
-    for o in outcomes:
-        if o.action == "no move set":
-            continue
-        rows.append({"label": o.name.title(), "level": o.new_points,
-                     "kind": "scenario", "row": 0.62})
-    df = pd.DataFrame(rows)
-
-    colour_map = alt.Scale(
-        domain=["entry", "receive", "market", "scenario", "reference"],
-        range=[p.accent, p.warning, p.muted, p.negative, p.positive])
-    base = alt.Chart(df).encode(
-        alt.X("level:Q", scale=alt.Scale(domain=[0, size], nice=False),
-              title="bp priced on the event", axis=alt.Axis(tickCount=6)),
-        alt.Y("row:Q", scale=alt.Scale(domain=[0, 1], nice=False), axis=None),
-        alt.Color("kind:N", scale=colour_map, legend=None),
-    )
-    dots = base.mark_circle(size=72).encode(
-        alt.Tooltip(["label:N", "level:Q"]),
-    )
-    ref_text = base.mark_text(
-        align="left", dx=6, dy=-9, fontSize=10,
-    ).encode(alt.Text("label:N")).transform_filter("datum.row == 0")
-    scen_text = base.mark_text(
-        align="left", dx=6, dy=12, fontSize=10,
-    ).encode(alt.Text("label:N")).transform_filter("datum.row > 0")
-    chart = dots + ref_text + scen_text
-    return _apply(chart, p, height)
-
-
-def playbook_pnl(
-    outcomes: list, p: Palette,
-    height: int = 150,
-) -> alt.LayerChart:
-    """Horizontal bars — $ P&L of the planned position under each scenario,
-    compact enough to sit beside the level chart."""
-    rows = []
-    for o in outcomes:
-        if o.action == "no move set":
-            continue
-        rows.append({"label": o.name.title(),
-                     "pnl": o.pnl_usd or 0.0,
-                     "sign": "pos" if (o.pnl_usd or 0) >= 0 else "neg"})
-    df = pd.DataFrame(rows)
-
-    bar_colour = alt.Scale(
-        domain=["pos", "neg"], range=[p.positive, p.negative])
-    base = alt.Chart(df).encode(
-        alt.X("pnl:Q", title="$ P&L at Kelly size",
-              axis=alt.Axis(format="$.0s")),
-        alt.Y("label:N", title=None, sort=None),
-        alt.Tooltip(["label:N", "pnl:Q"]),
-    )
-    bars = base.mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
-        alt.Color("sign:N", scale=bar_colour, legend=None),
-    )
-    # Value labels outside the bar, to the right.
-    out_text = base.mark_text(align="left", dx=4, fontSize=11, fontWeight=500).encode(
-        alt.Text("pnl:Q", format="$.0s"),
-        alt.Color(value=p.ink),
-    ).transform_filter("datum.pnl != 0")
-
-    chart = (bars + out_text).configure_axisX(grid=False)
-    return _apply(chart, p, height)

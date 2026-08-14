@@ -66,7 +66,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from .contracts import IR_TENOR_DAYS, effective_date, ir_last_trading_day
+from .contracts import (IR_TENOR_DAYS, effective_date, ir_last_trading_day,
+                        ir_settlement_day)
 from .rba_calendar import Meeting
 from .strip import StripPath
 
@@ -268,8 +269,13 @@ def analyse(quotes, path: StripPath, meetings: list[Meeting],
     out: list[BillPeriod] = []
 
     for q in live:
+        # The fix is the rate the contract settles on; the bill it stands for
+        # accrues from SETTLEMENT DAY, one business day later. A day out of 90
+        # is small, but this module claims its spans are exact, so it uses the
+        # right boundary rather than the convenient one.
         fix = ir_last_trading_day(q.month)
-        covers_start, covers_end = fix, fix + timedelta(days=IR_TENOR_DAYS)
+        covers_start = ir_settlement_day(q.month)
+        covers_end = covers_start + timedelta(days=IR_TENOR_DAYS)
         # In force BY the fix, and still undecided as of today: a decision
         # already taken is in `path.spot`, not something the contract is
         # pricing.

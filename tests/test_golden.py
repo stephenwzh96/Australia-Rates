@@ -383,3 +383,186 @@ def test_daily_limit_vetoes_rather_than_sizes():
                               50_000.0, 8, selected=0.25)
     assert lad.rung_for(0.25).within_daily_limit
     assert not lad.rung_for(1.0).within_daily_limit
+
+
+# ==========================================================================
+# Regressions from the post-ship audit. Each of these pins a bug that was
+# actually present in the shipped code, not a hypothetical.
+# ==========================================================================
+
+from core import model, montecarlo, volatility          # noqa: E402
+from state import store                                 # noqa: E402
+
+
+def _meeting_state(**trade):
+    st = store.new_meeting(
+        rba_calendar.meeting_to_dict(rba_calendar.DEFAULT_MEETINGS[5]),
+        date(2026, 8, 14))
+    st["trade"].update(trade)
+    return st
+
+
+def _fake_history(n: int = 400, start: float = 4.0) -> list[tuple[date, float]]:
+    """A deterministic pseudo-random rate series -- no network in tests."""
+    out, v = [], start
+    d = date(2025, 1, 1)
+    for i in range(n):
+        v += ((i * 7919) % 17 - 8) / 1000.0
+        out.append((d, v))
+        d += timedelta(days=1)
+    return out
+
+
+# --- A1: the volatility quiet bucket ---------------------------------------
+
+def test_policy_change_dates_widen_the_excluded_set():
+    """Decision days must be excluded across the WHOLE history, not just the
+    meeting calendar's two-year span.
+
+    The calendar covers 2026-27 while the BBSW history runs from 2011, so
+    excluding only calendar meetings left real policy-move days sitting in the
+    "quiet" baseline -- which deflates every multiplier measured against it.
+    """
+    hist = _fake_history()
+    events = [(hist[i][0], "CPI (quarterly)") for i in range(0, len(hist), 90)]
+    cal_days = {m.end for m in rba_calendar.DEFAULT_MEETINGS}
+    extra = {hist[i][0] for i in range(5, len(hist), 60)}
+
+    _, before, _ = volatility.estimate_from_history(hist, events, cal_days)
+    _, after, _ = volatility.estimate_from_history(hist, events, cal_days | extra)
+    assert before and after
+    # Removing genuinely loud days from the quiet bucket lowers the baseline,
+    # so every multiplier measured against it can only rise.
+    assert after["CPI (quarterly)"].n_quiet < before["CPI (quarterly)"].n_quiet
+
+
+def test_build_accepts_policy_changes_and_passes_them_through():
+    hist = _fake_history()
+    changes = {hist[i][0] for i in range(3, len(hist), 50)}
+    m = model.build(_meeting_state(points=8.0), as_of=date(2026, 8, 14),
+                    rate_history=hist, policy_changes=changes)
+    assert m.quiet_sigma_bp is not None
+
+
+# --- A2: no capture rescale on a rate-sourced estimate ---------------------
+
+def test_rate_sourced_vol_is_not_divided_by_capture():
+    """The US original divides quiet sigma by contract capture because it
+    calibrates on a CONTRACT PRICE. This app calibrates on 3-month BBSW, a
+    rate, which moves one-for-one with expectations whatever contract is being
+    sized -- so the same division would inflate sigma by 1/capture.
+
+    Asserted on the sigma the SIMULATION actually uses, not on
+    `quiet_sigma_bp`: that field holds the raw estimate from before any
+    rescale, so a test against it passes with the bug still in place -- which
+    is exactly what the first version of this test did.
+
+    The March 2027 meeting is used because its own delivery month captures
+    25.8% of the move: partial, but above the threshold at which the model
+    stops trusting the contract at all, so the buggy path is genuinely
+    reachable. Under the bug the estimate would come out ~3.9x too large.
+    """
+    hist = _fake_history()
+    march = rba_calendar.meeting_to_dict(
+        next(m for m in rba_calendar.DEFAULT_MEETINGS if m.end == date(2027, 3, 23)))
+
+    def build(contract_key):
+        st = store.new_meeting(march, date(2027, 1, 4))
+        st["trade"].update(points=8.0, size=25.0)
+        st["sizing"]["contract"] = contract_key
+        st["path"].update({"target_level": 2.0, "stop_level": 14.0})
+        return model.build(st, as_of=date(2027, 1, 4), rate_history=hist)
+
+    partial = build("ib:2027-03")       # 8 of 31 days -> capture 0.258
+    full = build("ib:2027-04")          # wholly after the decision -> 1.0
+
+    assert 0.20 < partial.capture < 0.30
+    assert full.capture == pytest.approx(1.0)
+    assert partial.monte_carlo is not None and full.monte_carlo is not None
+    # The whole point: a rate-sourced sigma does not care which contract you
+    # are sizing on.
+    assert (partial.monte_carlo.vol.daily_vol_bp
+            == pytest.approx(full.monte_carlo.vol.daily_vol_bp))
+    assert partial.monte_carlo.vol.capture == pytest.approx(1.0)
+
+
+# --- A4: the estimate must not care which side of 100 the series sits ------
+
+def test_vol_estimate_is_invariant_under_price_rate_inversion():
+    """`daily_changes` returns SIGNED diffs, so feeding a rate series where the
+    US fed a contract price flips every sign. Only variances are consumed
+    downstream, so this is harmless -- but it is a latent trap, and this pins
+    that the two agree."""
+    hist = _fake_history()
+    inverted = [(d, 100.0 - v) for d, v in hist]
+    events = [(hist[i][0], "CPI (quarterly)") for i in range(0, len(hist), 90)]
+    sig_a, mult_a, n_a = volatility.estimate_from_history(hist, events)
+    sig_b, mult_b, n_b = volatility.estimate_from_history(inverted, events)
+    assert sig_a == pytest.approx(sig_b)
+    assert n_a == n_b
+    assert mult_a["CPI (quarterly)"].shrunk == pytest.approx(
+        mult_b["CPI (quarterly)"].shrunk)
+
+
+# --- A3: the bill's 90 days run from settlement, not the fix ---------------
+
+def test_bill_tenor_starts_at_settlement_not_the_fix():
+    """The fix is the rate the contract settles ON; the bill it stands for
+    accrues from settlement day, one business day later."""
+    month = date(2026, 12, 1)
+    assert contracts.ir_last_trading_day(month) == date(2026, 12, 10)
+    assert contracts.ir_settlement_day(month) == date(2026, 12, 11)
+
+    meetings = list(rba_calendar.DEFAULT_MEETINGS)
+    ib = [_Q(date(2026, 11, 1), 4.46, "IBX6")]
+    path = strip.decompose(meetings, ib, spot=4.35, size=25.0, as_of=date(2026, 10, 1))
+    curve = bbsw.analyse([_Q(month, 4.60, "IRZ6")], path, meetings,
+                         as_of=date(2026, 10, 1))
+    p = curve.periods[0]
+    assert p.fix_date == date(2026, 12, 10)
+    assert p.covers_start == date(2026, 12, 11)
+    assert (p.covers_end - p.covers_start).days == contracts.IR_TENOR_DAYS
+
+
+# --- C: robustness ---------------------------------------------------------
+
+def test_non_positive_size_is_clamped_not_raised():
+    """A typed -25 used to raise ValueError straight out of `build` into a red
+    Streamlit traceback. It is clamped, and flagged, instead."""
+    for bad in (-25.0, 0.0):
+        m = model.build(_meeting_state(points=8.0, size=bad), as_of=date(2026, 8, 14))
+        assert m.size == 25.0
+        assert any("not a move" in w for w in m.warnings)
+    ok = model.build(_meeting_state(points=8.0, size=50.0), as_of=date(2026, 8, 14))
+    assert ok.size == 50.0
+    assert not any("not a move" in w for w in ok.warnings)
+
+
+def test_corrupt_meeting_file_falls_back_instead_of_wedging(tmp_path, monkeypatch):
+    """`build` reads `state["meeting"]` unguarded, so a corrupt file used to
+    raise on EVERY rerun with no way out but deleting it by hand."""
+    monkeypatch.setattr(store, "MEETINGS_DIR", tmp_path)
+    meetings = [rba_calendar.meeting_to_dict(m) for m in rba_calendar.DEFAULT_MEETINGS]
+    key = "2026-09-29"
+    for junk in ('{"schema":1,"label":"no meeting key"}', "not json {{{", "[1,2,3]"):
+        (tmp_path / f"{key}.json").write_text(junk)
+        state = store.load_or_seed(key, meetings, date(2026, 8, 14))
+        assert state.get("_recovered") is True
+        assert "meeting" in state
+        model.build(state, as_of=date(2026, 8, 14))     # must not raise
+
+
+def test_stop_analysis_stays_quiet_until_counts_are_entered():
+    """Six zeros is an unfilled form, not a hundred runs that went nowhere.
+    Analysing it produced two confident warnings about a table nobody had
+    touched."""
+    st = _meeting_state(points=8.0)
+    st["path"].update({"target_level": 2.0, "stop_level": 14.0})
+    m = model.build(st, as_of=date(2026, 8, 14))
+    assert m.stop is None
+    assert not any("Stop-path counts" in w for w in m.warnings)
+
+    st["path"]["no_move_never_breached"] = 90.0
+    st["path"]["move_gapped_through"] = 10.0
+    m2 = model.build(st, as_of=date(2026, 8, 14))
+    assert m2.stop is not None

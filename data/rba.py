@@ -44,6 +44,7 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import date, datetime, timedelta
 
 import requests
@@ -246,14 +247,37 @@ def fetch_table(table: str) -> str | None:
         return None
 
 
+@lru_cache(maxsize=8)
+def _table_memo(table: str, _day: date) -> dict[str, list[Observation]]:
+    """Process-level memo over `_load_table`, keyed on the day.
+
+    The disk cache stops the app re-downloading; this stops it re-PARSING.
+    Reading and decoding F1 is 17 series x ~3,900 observations, about 175ms,
+    and several call sites want it during a single render -- the kill criteria,
+    the spot readings, the volatility history, the basis chart. Streamlit's
+    `@st.cache_data` would only cover the app; putting the memo here means
+    tests, the export path and any CLI use get it too.
+
+    `_day` is part of the key rather than ignored so a session running across
+    midnight picks up the new day's publication instead of holding yesterday's
+    parse forever.
+    """
+    return _load_table(table)
+
+
 def table_cached(table: str, recheck_after: int = 1) -> dict[str, list[Observation]]:
-    """One table's series, behind the on-disk cache.
+    """One table's series, behind the on-disk cache and a process-level memo.
 
     Cached at the TABLE level: a single fetch already carries every series the
     app reads, so caching per series would re-download the same 300KB once per
     code. Rechecked daily -- nothing in F1 publishes more often, and the first
     visit of the day is the "did anything print?" check.
     """
+    return _table_memo(table, date.today())
+
+
+def _load_table(table: str) -> dict[str, list[Observation]]:
+    """Fetch-or-read one table. Everything above is caching; this is the work."""
     key = f"rba-table-{table}"
     marker = cache.load(f"{key}-stamp")
     today = date.today()
@@ -333,6 +357,30 @@ def historical_bbsw_ois_basis() -> list[Observation]:
     ois = {o.date: o.value for o in table.get(OIS_CODE, [])}
     return [Observation(d, (bbsw[d] - ois[d]) * 100.0)
             for d in sorted(set(bbsw) & set(ois))]
+
+
+POLICY_CHANGE_CODE = "FIRMMCCRT"
+
+
+def policy_change_dates() -> set[date]:
+    """Every date the RBA actually moved the cash rate target, from its own
+    "Change in the Cash Rate Target" series.
+
+    This exists to keep the volatility estimate honest, and it fixes a real
+    contamination. `core.volatility` splits history into "loud" release days and
+    a "quiet" baseline, and the caller excludes decision days from the quiet
+    bucket because a decision's jump is simulated separately. But the meeting
+    calendar in `core.rba_calendar` only covers 2026-27, while the BBSW history
+    it is measured against runs from 2011 -- so roughly 145 historical decision
+    days were landing in the quiet bucket, inflating the baseline sigma and
+    deflating every release multiplier measured against it.
+
+    `FIRMMCCRT` is dated, real and published by the RBA, so it needs no rule and
+    no interpolation. It is not every meeting -- only the ones that moved the
+    rate -- but those are precisely the high-volatility days, and a hold that
+    surprised nobody belongs in the quiet bucket anyway.
+    """
+    return {o.date for o in table_cached("f1").get(POLICY_CHANGE_CODE, [])}
 
 
 def cash_rate_gap_bp() -> float | None:

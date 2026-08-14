@@ -58,10 +58,12 @@ class Model:
     stop: path.StopAnalysis | None
     monte_carlo: montecarlo.MonteCarloResult | None
     vol_multipliers: dict[str, volatility.Multiplier]
-    # Quiet-day sigma in CONTRACT price bp, the level the multipliers scale.
-    # Kept alongside them because a ratio on its own sizes nothing: the release
-    # prep card needs `quiet_sigma * sqrt(k)` to say how big an NFP day is, and
-    # deriving that from `monte_carlo` would only work when the simulation ran.
+    # Quiet-day sigma in RATE bp -- the level the multipliers scale. Rate, not
+    # contract price: this app calibrates on 3-month BBSW, which is why no
+    # capture rescale is applied to it (see `build`). Kept alongside the
+    # multipliers because a ratio on its own sizes nothing -- reading "a CPI
+    # day is 5x" needs the level to multiply -- and deriving it from
+    # `monte_carlo` would only work when the simulation actually ran.
     quiet_sigma_bp: float | None
 
     # step 7
@@ -109,7 +111,8 @@ def build(state: dict[str, Any],
           rba_units: dict[str, str] | None = None,
           all_meetings: list[Meeting] | None = None,
           rate_history: list[tuple[date, float]] | None = None,
-          rate_symbol: str | None = None) -> Model:
+          rate_symbol: str | None = None,
+          policy_changes: set[date] | None = None) -> Model:
     trade = state.get("trade", {})
     prob = state.get("probability", {})
     pth = state.get("path", {})
@@ -140,13 +143,26 @@ def build(state: dict[str, Any],
         hist_events = [(e.when, e.release)
                        for e in econ_calendar.recurring_events(h0, h1, meetings)
                        if e.release]
+        # DECISION DAYS MUST COVER THE WHOLE HISTORY, NOT JUST THE CALENDAR.
+        # The meeting calendar spans 2026-27; the BBSW history behind it runs
+        # from 2011. Excluding only calendar meetings left ~145 real decision
+        # days sitting in the "quiet" bucket, which inflates the baseline sigma
+        # and deflates every multiplier measured against it. `policy_changes`
+        # carries the RBA's own dated record of every cash rate move (see
+        # `data.rba.policy_change_dates`) and closes that gap.
         decision_days = ({m.end for m in meetings}
-                         | {m.end + timedelta(days=1) for m in meetings})
+                         | {m.end + timedelta(days=1) for m in meetings}
+                         | set(policy_changes or ()))
         quiet_sigma_price, multipliers, quiet_observations = volatility.estimate_from_history(
             rate_history, hist_events, decision_days)
 
     points = _f(trade.get("points"))
-    size = _f(trade.get("size")) or 25.0
+    # `or 25.0` would silently turn a typed 0 into 25, and a NEGATIVE size
+    # reaches `pricing.implied_probability`, which raises straight out of this
+    # function into a red Streamlit traceback. Neither is acceptable from a
+    # number the user types, so it is clamped here and flagged below.
+    raw_size = _f(trade.get("size"))
+    size = raw_size if (raw_size or 0) > 0 else 25.0
     side: pricing.Side = trade.get("side", "fade")
     direction: pricing.Direction = trade.get("direction", "hike")
     kf = _f(trade.get("kelly_fraction")) or pricing.DEFAULT_KELLY_FRACTION
@@ -158,6 +174,11 @@ def build(state: dict[str, Any],
     q = override if prob.get("mode") == "manual" and override is not None else decomposition.q
 
     warnings: list[str] = []
+    if raw_size is not None and raw_size <= 0:
+        warnings.append(
+            f"Size of the move was {raw_size:g}bp, which is not a move. Using "
+            f"{size:g}bp instead - the implied probability is points/size, so a "
+            "zero or negative size has no meaning.")
     if not meeting.verified:
         warnings.append("Meeting date is unverified - confirm against rba.gov.au.")
     if prob.get("mode") == "decomposition" and override is not None and not decomposition.reconciles:
@@ -279,12 +300,20 @@ def build(state: dict[str, Any],
                     "carried over from a meeting with a different entry."
                 )
 
-        # A user-typed vol always wins; failing that, the sizing contract's
-        # own recent realised volatility (see `data.asx.fetch_history` and
-        # `montecarlo.realized_daily_vol_bp`) -- excluding known decision
-        # dates, whose jump this model simulates separately from the
-        # pre-announcement drift being estimated here. No fabricated default:
-        # without one of these two, there is simply no Monte Carlo result.
+        # A user-typed vol always wins; failing that, the realised volatility
+        # of 3-month BBSW (see `data.rba.realised_daily_vol_bp`), excluding
+        # known decision dates whose jump this model simulates separately from
+        # the pre-announcement drift being estimated here. No fabricated
+        # default: without one of these two, there is simply no Monte Carlo.
+        #
+        # NO CAPTURE DIVISION HERE, and that is the correction. The US original
+        # divides by capture because it calibrates on a CONTRACT PRICE, and a
+        # contract whose delivery month only partly spans the decision moves
+        # correspondingly less per bp of event -- so dividing recovers the
+        # event's own scale. This app calibrates on a RATE. Three-month BBSW
+        # moves one-for-one with rate expectations no matter which contract you
+        # happen to be sizing, so the same division would inflate sigma by
+        # 1/capture -- fivefold at the 0.20 floor -- for no reason at all.
         vol_override = _f(pth.get("vol_override_bp"))
         vol_estimate: montecarlo.VolEstimate | None = None
         if vol_override is not None and vol_override > 0:
@@ -292,14 +321,11 @@ def build(state: dict[str, Any],
             # think the priced level does per day, not what a contract does.
             vol_estimate = montecarlo.VolEstimate(vol_override, "override",
                                                   capture=1.0)
-        elif quiet_sigma_price is not None and capture_usable:
-            # price bp -> event bp. A contract that only moves `capture` as far
-            # per bp of event has correspondingly smaller price vol, so
-            # dividing recovers the level the event itself moves.
+        elif quiet_sigma_price is not None:
             vol_estimate = montecarlo.VolEstimate(
-                quiet_sigma_price / capture, "historical", symbol=rate_symbol,
+                quiet_sigma_price, "historical", symbol=rate_symbol,
                 observations=quiet_observations,
-                capture=capture)
+                capture=1.0)
 
         # A misplaced level makes the simulation meaningless, not just
         # imprecise: `touch_shares` classifies by which side of entry a level
@@ -340,7 +366,18 @@ def build(state: dict[str, Any],
         # The stop-cost decomposition runs AFTER the simulation so a partial
         # take-profit blend can use the simulated share of target-touches that
         # reached the full target (manual fallback: assume they all did).
-        if stop_level is not None:
+        #
+        # Only once at least one count is entered, though. All six at zero is
+        # "not filled in yet", not "a hundred runs that went nowhere", and
+        # analysing it produces two confident warnings -- counts sum to 0, and
+        # they imply P(move) = 0% -- about a table the user has not touched.
+        # Nagging about an empty form teaches people to ignore the warnings
+        # that matter.
+        _count_keys = ("no_move_target_hit", "no_move_never_breached",
+                       "no_move_falsely_stopped", "move_target_hit",
+                       "move_stopped_early", "move_gapped_through")
+        any_counts = any((_f(pth.get(k)) or 0.0) > 0 for k in _count_keys)
+        if stop_level is not None and any_counts:
             stop = path.stop_analysis(
                 points, size, q, stop_level,
                 _f(pth.get("no_move_never_breached")) or 0.0,

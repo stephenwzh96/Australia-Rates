@@ -82,7 +82,11 @@ pins those to catch a port that damaged the engine. What genuinely changed:
   tradeable OIS curve, and the better construction anyway.
 - **Volatility is calibrated on rates, not contract prices.** The ASX feed has
   no history at all. A bank bill future is quoted `100 - yield`, so a basis
-  point of daily 3-month BBSW *is* a basis point of contract price.
+  point of daily 3-month BBSW is a basis point of contract price — the right
+  units, and the reason no contract-capture rescale is applied to it. It is
+  still a proxy: BBSW spans about 1.5 meetings, so read it as the short end's
+  daily noise rather than this one meeting's, and type an override when the
+  distinction matters.
 
 ## Not included
 
@@ -90,7 +94,9 @@ The **Labour** and **Inflation** tabs are deliberately absent — different
 figures are coming. **Release prep** and the LLM research agent came out with
 them. `core/econ_calendar.py` survives in slim form (dates only, no series
 values) because the Monte Carlo's release-day volatility multipliers are keyed
-off it; without it a CPI Wednesday would be priced like a quiet Tuesday.
+off it; without it a CPI Wednesday would be priced like a quiet Tuesday. On
+Australian data quarterly CPI comes out at roughly 5x a quiet day — by a wide
+margin the loudest release on the calendar.
 
 ## Caveats
 
@@ -137,8 +143,15 @@ a test can call directly.
 .venv/bin/python -m pytest tests -q
 ```
 
-36 tests. Beyond the golden values, they pin the things that had to be
+44 tests. Beyond the golden values, they pin the things that had to be
 re-derived rather than translated: the ACT/365 DV01s, the IB averaging window,
 IR's binary capture and its last-trading-day rule, Anzac Day never substituting
-in NSW, the strip's refusal to invent a spot rate it cannot recover, and a
-regression against a circular-basis bug this codebase actually had.
+in NSW, and the strip's refusal to invent a spot rate it cannot recover.
+
+Seven are regressions against bugs this codebase actually had, not
+hypotheticals — a circular basis that returned the IB path unchanged, a
+volatility estimate divided by a contract capture that has no meaning for a
+rate series, a bill tenor starting a day early, a negative move size crashing
+the app, a corrupt save file wedging it on every rerun, and stop-path warnings
+nagging about an unfilled form. Each was checked by reintroducing the bug and
+confirming the test fails.

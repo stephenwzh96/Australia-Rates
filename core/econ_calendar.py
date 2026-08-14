@@ -55,7 +55,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from . import holidays as hol
 from .rba_calendar import SMP_MONTHS, Meeting
 
 LOOKBACK_DAYS = 120
@@ -194,6 +193,3 @@ def merged_calendar(start: date, end: date, manual_rows,
              if (e.when, e.release) not in claimed]
     return sorted(manual + rules, key=lambda e: (e.when, -e.weight))
 
-
-def next_business_day_after(d: date) -> date:
-    return hol.next_business_day(d)

@@ -14,7 +14,7 @@ instead of three steps downstream.
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -28,6 +28,7 @@ from core import contracts, econ_calendar, model, montecarlo, pricing, rba_calen
 from core import sizing as sizingmod
 from core import strip as stripmod
 from data import asx, rba
+from data.common import Observation
 from export import report
 from state import store
 from ui import charts, components as C
@@ -77,15 +78,59 @@ def rba_spot() -> dict[str, float | None]:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def policy_changes() -> set:
+    """Real dated cash rate moves, to keep them out of the volatility quiet
+    bucket -- see `data.rba.policy_change_dates`."""
+    return rba.policy_change_dates()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def bbsw_history() -> list[tuple[date, float]]:
     """Daily 3-month BBSW, the volatility anchor.
 
     The ASX price feed has no history at all, so contract-price volatility --
-    what the US version calibrates on -- simply does not exist here. A bank
-    bill future is quoted as `100 - yield`, so a basis point in this series IS
-    a basis point of contract price. It is the right scale, not a proxy.
+    what the US version calibrates on -- simply does not exist here. BBSW is
+    quoted as a rate and a bank bill future as `100 - yield`, so a basis point
+    of this series is a basis point of contract price: the right UNITS, and no
+    capture rescale is applied to it for that reason.
+
+    It is still a proxy, and the honest caveat is tenor rather than credit. An
+    earlier version of this note claimed the BBSW/cash spread showed credit
+    noise swamping the signal; that was an artifact of differencing against a
+    step function, and excluding the handful of days the RBA actually moved the
+    two series measure the same 2.1bp/day. What BBSW genuinely does is span
+    about 1.5 meetings, so it reads as the short end's daily noise rather than
+    this one meeting's. Type an override when that distinction matters.
     """
     return [(o.date, o.value) for o in fetch_rba_table().get(rba.BBSW_CODE, [])]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def kill_series_history() -> dict[str, list]:
+    """Recent history for each auto-wired kill criterion, for its sparkline.
+
+    Derived series, not raw ones: two of the three criteria are spreads or
+    rolling moves that exist nowhere in table F1 as a column, so they are
+    computed here on the same definitions `kill_series_values` uses. Keeping
+    both in this module is what stops the chart and the trigger disagreeing.
+    """
+    t = fetch_rba_table()
+    bb = {o.date: o.value for o in t.get(rba.BBSW_CODE, [])}
+    tgt = {o.date: o.value for o in t.get(rba.CASH_TARGET_CODE, [])}
+    trd = {o.date: o.value for o in t.get(rba.CASH_TRADED_CODE, [])}
+    days = sorted(set(bb) & set(tgt))[-180:]
+    out: dict[str, list] = {
+        "BBSW_CASH_SPREAD": [Observation(d, (bb[d] - tgt[d]) * 100.0) for d in days],
+        "CASH_GAP_ABS": [Observation(d, abs(trd[d] - tgt[d]) * 100.0)
+                         for d in days if d in trd],
+    }
+    moves = []
+    for i, d in enumerate(days):
+        prior = [x for x in days[:i + 1] if (d - x).days <= 14]
+        if prior:
+            moves.append(Observation(d, abs(bb[d] - bb[prior[0]]) * 100.0))
+    out["BBSW_14D_MOVE"] = moves
+    return out
 
 
 def kill_series_values() -> tuple[dict, dict]:
@@ -159,6 +204,11 @@ with st.sidebar:
     trade = S.setdefault("trade", {})
     prob = S.setdefault("probability", {})
     sizing_state = S.setdefault("sizing", {})
+    pth = S.setdefault("path", {})
+    if S.pop("_recovered", False):
+        st.warning("The saved file for this meeting was unreadable and has been "
+                   "replaced with a fresh one. Nothing was overwritten on disk "
+                   "until you press Save.")
 
     st.divider()
     st.markdown("#### The trade")
@@ -175,12 +225,15 @@ with st.sidebar:
 
     pts = st.number_input(
         "Points priced (bp)", value=float(trade.get("points") or 0.0),
-        step=0.5, format="%.2f", on_change=mark_dirty,
+        step=0.5, format="%.2f", min_value=0.0, on_change=mark_dirty,
         help="What the market charges for the event. NOT the probability.")
     trade["points"] = pts if pts else None
+    # min_value matters: implied probability is points/size, so a zero or
+    # negative size has no meaning and used to raise straight out of
+    # `model.build` into a red traceback.
     trade["size"] = st.number_input(
         "Size of the move (bp)", value=float(trade.get("size") or 25.0),
-        step=5.0, format="%.0f", on_change=mark_dirty)
+        step=5.0, format="%.0f", min_value=1.0, on_change=mark_dirty)
 
     st.divider()
     st.markdown("#### Your probability")
@@ -205,11 +258,11 @@ with st.sidebar:
     sizing_state["max_drawdown"] = st.number_input(
         "Max drawdown (A$) — the Kelly bankroll",
         value=float(sizing_state.get("max_drawdown") or sizingmod.DEFAULT_MAX_DRAWDOWN),
-        step=25_000.0, format="%.0f", on_change=mark_dirty)
+        step=25_000.0, format="%.0f", min_value=0.0, on_change=mark_dirty)
     sizing_state["daily_limit"] = st.number_input(
         "Daily loss limit (A$) — a veto, not a sizing input",
         value=float(sizing_state.get("daily_limit") or sizingmod.DEFAULT_DAILY_LIMIT),
-        step=10_000.0, format="%.0f", on_change=mark_dirty)
+        step=10_000.0, format="%.0f", min_value=0.0, on_change=mark_dirty)
     trade["kelly_fraction"] = st.select_slider(
         "Kelly fraction", options=[0.25, 1 / 3, 0.5, 1.0],
         value=float(trade.get("kelly_fraction") or 0.25),
@@ -230,7 +283,7 @@ with st.sidebar:
     if sizing_state["contract"] == "custom":
         sizing_state["custom_dv01"] = st.number_input(
             "DV01 per lot (A$)", value=float(sizing_state.get("custom_dv01") or 0.0),
-            step=1.0, on_change=mark_dirty)
+            step=1.0, min_value=0.0, on_change=mark_dirty)
 
     st.divider()
     if st.button("Save", width="stretch", type="primary"):
@@ -255,21 +308,50 @@ ir_stale = asx.stale_codes(ir_quotes, ir_ref)
 horizon = asx.coverage_end(ib_quotes, ib_ref)
 
 # The IR sizing DV01 needs a live yield; take it from the contract selected.
+# IR's DV01 moves with the yield level, so the model needs a live one. It is
+# handed over in a THROWAWAY overlay rather than written into `S`: `S` is the
+# live session dict the widgets mutate and Save persists, and a market reading
+# is not a user decision -- persisting it would make a reopened meeting size
+# off whatever the curve happened to be on the day it was last viewed.
 sel_key = sizing_state.get("contract") or "ib"
+model_state = S
 if sel_key.startswith("ir:"):
     sel_month = sel_key.partition(":")[2]
     match = next((q for q in ir_quotes if q.ok and f"{q.month:%Y-%m}" == sel_month), None)
-    sizing_state["contract_yield"] = match.implied_rate if match else None
+    if match is not None:
+        model_state = {**S, "sizing": {**sizing_state,
+                                       "contract_yield": match.implied_rate}}
 
 kill_values, kill_units = kill_series_values()
 
-M = model.build(
-    S, as_of=TODAY,
-    rba_values=kill_values, rba_units=kill_units,
-    all_meetings=MEETINGS,
-    rate_history=bbsw_history(),
-    rate_symbol="3-month BBSW (RBA F1)",
-)
+def rebuild():
+    """Recompute the whole framework from the current state.
+
+    Streamlit runs top to bottom, so a widget rendered inside a section body
+    only writes back into `S` AFTER the model would otherwise have been built
+    -- which leaves the Verdict, and everything downstream of it, one
+    interaction behind whatever you just edited. That is not cosmetic here: the
+    Monte Carlo needs a target and a stop, and both are typed in the Path
+    section, so without this the simulation could never run on the values you
+    just entered.
+
+    Cheap enough to repeat -- about 6ms of pure arithmetic, with every data
+    fetch already memoised -- so it is called after each input cluster rather
+    than reasoned about.
+    """
+    global M
+    M = model.build(
+        model_state, as_of=TODAY,
+        rba_values=kill_values, rba_units=kill_units,
+        all_meetings=MEETINGS,
+        rate_history=bbsw_history(),
+        rate_symbol="3-month BBSW (RBA F1)",
+        policy_changes=policy_changes(),
+    )
+    return M
+
+
+M = rebuild()
 
 # The priced path, and the bill curve laid against it.
 strip_spot = stripmod.implied_spot(ib_quotes, MEETINGS, as_of=TODAY)
@@ -401,6 +483,15 @@ with LEFT:
                 "divides by the days after the decision — reliable in the middle of a month, "
                 "brutally leveraged at the end of one. The RBA's late-month meetings are "
                 "exactly where that matters, which is why the source is shown per row.")
+            step_here = PATH.step_for(M.meeting.key)
+            if step_here is not None and step_here.reliable:
+                if st.button(
+                        f"Use the strip's {step_here.step_bp:+.1f}bp as points priced",
+                        help="Adopts the market's own number for THIS meeting so your q "
+                             "is measured against it rather than against a stale entry."):
+                    trade["points"] = round(abs(step_here.step_bp), 2)
+                    mark_dirty()
+                    st.rerun()
             if PATH.excluded_count:
                 st.caption(
                     f"{PATH.excluded_count} step(s) solved off a contract that is not trading "
@@ -494,40 +585,255 @@ with LEFT:
         if not M.priced:
             st.info("Enter the points priced in the sidebar to begin.")
         else:
-            C.section("Mark-to-market ladder", "What the position is worth as it moves.")
+            C.section("Step 6 — path risk",
+                      "Where you get out, and what the stop costs you to hold.")
+
+            # The market bound: the level the priced number reaches if the
+            # event fully happens. Every barrier lives between entry and here.
+            bound = M.size if M.side == "fade" else 0.0
+            a, b, c = st.columns(3)
+            with a:
+                tgt = st.number_input(
+                    "Take-profit (bp priced)", value=float(pth.get("target_level") or 0.0),
+                    step=0.5, format="%.2f", on_change=mark_dirty,
+                    help="Where you scale out. In bp PRICED, not P&L.")
+                pth["target_level"] = tgt or None
+            with b:
+                stp = st.number_input(
+                    "Stop (bp priced)", value=float(pth.get("stop_level") or 0.0),
+                    step=0.5, format="%.2f", on_change=mark_dirty,
+                    help="Where the thesis is wrong enough to leave.")
+                pth["stop_level"] = stp or None
+            with c:
+                cur = st.number_input(
+                    "Current mark (bp priced)", value=float(pth.get("current_price") or 0.0),
+                    step=0.5, format="%.2f", on_change=mark_dirty)
+                pth["current_price"] = cur or None
+
+            with st.expander("Partial scale-out and a hard floor"):
+                d, e, f = st.columns(3)
+                with d:
+                    pt = st.number_input(
+                        "Partial target (bp priced)",
+                        value=float(pth.get("partial_target_level") or 0.0),
+                        step=0.5, format="%.2f", on_change=mark_dirty,
+                        help="A first scale-out before the full target. 0 = none.")
+                    # 0 is "blank", not a level: a scale-out at entry is never a
+                    # real barrier, and treated as one it sits on the wrong side
+                    # of entry and blocks the whole simulation.
+                    pth["partial_target_level"] = pt or None
+                with e:
+                    pth["partial_share"] = st.slider(
+                        "Share taken off there", 0.0, 1.0,
+                        float(pth.get("partial_share") or 0.5), 0.05,
+                        on_change=mark_dirty)
+                with f:
+                    hs = st.number_input(
+                        "Hard floor (bp priced)",
+                        value=float(pth.get("hard_stop_level") or 0.0),
+                        step=0.5, format="%.2f", on_change=mark_dirty,
+                        help="A discipline line. Warns if misplaced, never blocks.")
+                    pth["hard_stop_level"] = hs or None
+
+            # The barriers above are what the exit map, the simulation and the
+            # stop-cost decomposition are all built from, so the model has to
+            # catch up before any of them is drawn.
+            M = rebuild()
+
             st.altair_chart(charts.mtm_ladder(M.ladder, P), use_container_width=True)
             if M.exit_levels:
-                C.table(["Level", "Role", "At", "MTM", "P&L"],
+                C.table(["Level", "Role", "At", "MTM", "Price", "P&L"],
                         [[x.label, x.role, f"{x.level:g}bp", f"{x.mtm:+.2f}bp",
+                          "—" if x.price is None else f"{x.price:.3f}",
                           "—" if x.pnl is None else f"A${x.pnl:,.0f}"]
-                         for x in M.exit_levels])
+                         for x in M.exit_levels], numeric=(2, 3, 4, 5))
 
+            # ------------------------------------------------ volatility
+            st.divider()
+            C.section("Volatility", "What the priced level does on a quiet day.")
+            g, h = st.columns([1, 1])
+            with g:
+                vo = st.number_input(
+                    "Daily vol override (bp/day)",
+                    value=float(pth.get("vol_override_bp") or 0.0),
+                    step=0.25, format="%.2f", min_value=0.0, on_change=mark_dirty,
+                    help="In EVENT terms. Overrides the estimate below.")
+                pth["vol_override_bp"] = vo or None
+            with h:
+                pth["vol_uncertainty"] = st.checkbox(
+                    "Treat the vol estimate as uncertain",
+                    value=bool(pth.get("vol_uncertainty")), on_change=mark_dirty,
+                    help="Draws sigma from a chi-square around the estimate rather "
+                         "than trusting one number.")
+
+            M = rebuild()
+
+            if M.quiet_sigma_bp is not None:
+                C.vintage(
+                    f"Quiet-day sigma {M.quiet_sigma_bp:.2f}bp/day, from daily 3-month BBSW "
+                    f"(RBA table F1). Over {montecarlo.trading_days_between(TODAY, M.meeting.end)} "
+                    "trading days to the decision.")
+                C.note(
+                    "BBSW is a **rate**, so a basis point of it is a basis point of the event — "
+                    "no contract-capture rescale is applied, unlike the US original, which "
+                    "calibrates on a contract price. It spans about 1.5 meetings rather than "
+                    "one, so read it as the short end's daily noise rather than this meeting's "
+                    "alone.")
+            if M.vol_multipliers:
+                with st.expander("How each release was weighted"):
+                    C.table(
+                        ["Release", "Event days", "Quiet days", "Raw", "Shrunk", "95% CI"],
+                        [[m.name, m.n_event, m.n_quiet, f"{m.raw:.2f}x",
+                          f"{m.shrunk:.2f}x", f"{m.ci_low:.2f}–{m.ci_high:.2f}"]
+                         for m in sorted(M.vol_multipliers.values(),
+                                         key=lambda m: -m.shrunk)],
+                        numeric=(1, 2, 3, 4, 5))
+                    C.note(
+                        "**Shrunk** is the number actually used: a ratio from three "
+                        "observations is pulled toward 1 until the data earns it. Quarterly "
+                        "CPI is the loudest release on the Australian calendar by a wide "
+                        "margin, which is what the multiplier should show.")
+
+            # ---------------------------------------------- Monte Carlo
             if M.monte_carlo is not None:
+                mc = M.monte_carlo
                 st.divider()
                 C.section("Simulated paths", "Where the exits actually get touched.")
-                st.plotly_chart(
-                    charts.mc_fan_chart(M.monte_carlo, M.points, M.size, M.side, P),
+                st.altair_chart(
+                    charts.mc_fan_chart(mc, M.points, M.size, M.side, P),
                     use_container_width=True)
-            elif M.quiet_sigma_bp:
-                st.caption(
-                    f"Quiet-day sigma {M.quiet_sigma_bp:.2f}bp, from daily 3-month BBSW. "
-                    "Set a target and a stop in the meeting state to run the simulation.")
+                i, j, k = st.columns(3)
+                i.metric("Target first", f"{mc.p_target_first:.1%}")
+                j.metric("Stop first", f"{mc.p_stop_first:.1%}")
+                k.metric("Rode it out", f"{mc.p_rode_out:.1%}")
 
+                with st.expander("If I moved the stop, or the target"):
+                    vol = montecarlo.VolEstimate(
+                        M.quiet_sigma_bp or (pth.get("vol_override_bp") or 1.0),
+                        "historical")
+                    days = montecarlo.trading_days_between(TODAY, M.meeting.end)
+                    lo, hi = st.columns(2)
+                    with lo:
+                        levels = montecarlo.suggested_sweep_levels(M.points, bound)
+                        sweep = montecarlo.stop_sweep(
+                            M.points, M.size, M.side, M.summary.q, mc.target_level,
+                            levels, vol, days)
+                        st.altair_chart(
+                            charts.mc_sensitivity(sweep, mc.stop_level, "stop (bp priced)", P),
+                            use_container_width=True)
+                    with hi:
+                        levels = montecarlo.suggested_sweep_levels(M.points, 0.0
+                                                                   if M.side == "fade" else M.size)
+                        sweep = montecarlo.target_sweep(
+                            M.points, M.size, M.side, M.summary.q, mc.stop_level,
+                            levels, vol, days)
+                        st.altair_chart(
+                            charts.mc_sensitivity(sweep, mc.target_level, "target (bp priced)", P),
+                            use_container_width=True)
+            elif not (pth.get("target_level") and pth.get("stop_level")):
+                st.info("Set a take-profit and a stop above to run the simulation.")
+
+            # -------------------------------------------- stop-path counts
+            st.divider()
+            C.section("What the stop costs",
+                      "Out of 100 imagined runs, where did each one end?")
+            C.note(
+                "The stop is not free. It converts some winners into small losers, and the "
+                "only way to know whether that is worth the protection is to count the paths "
+                "rather than assume. Counts are per 100 runs and must sum to 100.")
+            nm, mv = st.columns(2)
+            with nm:
+                st.caption("**If the RBA holds**")
+                for key_, label in (("no_move_target_hit", "reached the target"),
+                                    ("no_move_never_breached", "drifted, never stopped"),
+                                    ("no_move_falsely_stopped", "stopped out anyway")):
+                    pth[key_] = st.number_input(
+                        label, value=float(pth.get(key_) or 0.0), step=1.0,
+                        min_value=0.0, format="%.0f", key=f"sp_{key_}",
+                        on_change=mark_dirty)
+            with mv:
+                st.caption(f"**If the RBA moves {M.size:g}bp**")
+                for key_, label in (("move_target_hit", "reached the target first"),
+                                    ("move_stopped_early", "stopped before the decision"),
+                                    ("move_gapped_through", "gapped through on the day")):
+                    pth[key_] = st.number_input(
+                        label, value=float(pth.get(key_) or 0.0), step=1.0,
+                        min_value=0.0, format="%.0f", key=f"sp_{key_}",
+                        on_change=mark_dirty)
+
+            M = rebuild()
+            if M.stop is not None:
+                s = M.stop
+                C.table(
+                    ["", "EV"],
+                    [["Without the stop", f"{s.ev_without_stop:+.2f}bp"],
+                     ["With the stop", f"{s.ev_with_stop:+.2f}bp"],
+                     ["Cost of the stop", f"{s.cost_of_stop:+.2f}bp"]],
+                    numeric=(1,), mark_rows=(2,))
+                if s.cost_as_share_of_edge is not None:
+                    st.caption(
+                        f"The stop costs {abs(s.cost_as_share_of_edge):.0%} of the raw edge.")
+
+        # ------------------------------------------------- kill criteria
         st.divider()
-        C.section("Kill criteria", "Pre-commit to what invalidates the thesis.")
-        if M.kill.is_stale:
-            st.error(f"{M.kill.count} kill criteria live — the probability estimate is stale.")
-        C.table(["Criterion", "Test", "Current", "Status"],
-                [[k.label,
-                  "manual" if k.comparator == "manual"
-                  else f"{k.comparator} {k.threshold:g}{k.unit}",
-                  "—" if k.current is None else f"{k.current:.1f}{k.unit}",
-                  k.status] for k in M.kill.criteria])
+        C.section("Step 7 — kill criteria", "Pre-commit to what invalidates the thesis.")
+        # Reserved now, filled after the editor below. The banner belongs at the
+        # top where it will be read, but its content depends on toggles that are
+        # rendered further down -- painting it in place would leave it one
+        # interaction stale, which for a staleness warning is a bad joke.
+        stale_slot = st.empty()
         C.note(
             "The first three read live off RBA table F1 and colour themselves; the rest are "
-            "manual toggles. Two or more live at once and the app says the estimate is stale — "
-            "the threshold is enforced here rather than left to memory, because the moment it "
-            "matters is the moment you are least inclined to apply it.")
+            "manual toggles. Two or more live at once and the app banners that the estimate "
+            "is stale — the threshold is enforced here rather than left to memory, because "
+            "the moment it matters is the moment you are least inclined to apply it.")
+
+        raw_kills = S.setdefault("kill_criteria", [])
+        for i, raw in enumerate(raw_kills):
+            crit = next((k for k in M.kill.criteria if k.label == raw.get("label")), None)
+            head, val, rm = st.columns([0.62, 0.28, 0.10], vertical_alignment="center")
+            with head:
+                raw["label"] = st.text_input(
+                    "label", value=raw.get("label", ""), key=f"kill_lbl_{i}",
+                    label_visibility="collapsed", on_change=mark_dirty)
+            with val:
+                if crit is not None and crit.is_auto:
+                    tone = P.critical if crit.triggered else P.ink_secondary
+                    reading = "—" if crit.current is None else f"{crit.current:.1f}{crit.unit}"
+                    st.markdown(
+                        f"<div style='color:{tone};font-weight:600'>{reading} "
+                        f"<span style='font-weight:400;opacity:.7'>vs "
+                        f"{crit.comparator} {crit.threshold:g}{crit.unit}</span></div>",
+                        unsafe_allow_html=True)
+                else:
+                    raw["triggered"] = st.checkbox(
+                        "live", value=bool(raw.get("triggered")), key=f"kill_trg_{i}",
+                        on_change=mark_dirty)
+            with rm:
+                if st.button("✕", key=f"kill_rm_{i}", help="Remove this criterion"):
+                    raw_kills.pop(i)
+                    mark_dirty()
+                    st.rerun()
+            if raw.get("note"):
+                C.note(raw["note"])
+            if crit is not None and crit.is_auto and crit.series:
+                hist = kill_series_history().get(crit.series)
+                if hist:
+                    st.altair_chart(
+                        charts.sparkline(hist, crit.threshold, crit.triggered, P),
+                        use_container_width=True)
+
+        M = rebuild()
+        if M.kill.is_stale:
+            stale_slot.error(
+                f"{M.kill.count} kill criteria live — the probability estimate is stale.")
+
+        if st.button("+ Add kill criterion"):
+            raw_kills.append({"label": "New criterion", "comparator": "manual",
+                              "threshold": None, "series": None, "unit": "",
+                              "triggered": False, "note": ""})
+            mark_dirty()
+            st.rerun()
 
     # ------------------------------------------------------- 5. Vote count
     elif section == "Vote count":
@@ -553,10 +859,29 @@ with LEFT:
                 "not assert policy views for people it has not sourced. Fill the names from "
                 "rba.gov.au and set the scores from each member's own speeches.")
 
-        C.table(["Member", "Role", "Bloc", "Hawk–dove", "Mover"],
-                [[r.get("name") or "—", r.get("role", ""), r.get("bloc", ""),
-                  f"{float(r.get('score', 2.5)):.1f}",
-                  "yes" if r.get("is_mover") else ""] for r in roster_rows])
+        edited = st.data_editor(
+            [{"Member": r.get("name", ""), "Role": r.get("role", ""),
+              "Bloc": r.get("bloc", ""), "Hawk-dove": float(r.get("score", 2.5)),
+              "Mover": bool(r.get("is_mover"))} for r in roster_rows],
+            column_config={
+                "Hawk-dove": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=5.0, step=0.1,
+                    help="5 = most hawkish. Your read, from the member's own speeches."),
+                "Mover": st.column_config.CheckboxColumn(
+                    help="Counted in P(bloc moves), whatever their bloc."),
+            },
+            hide_index=True, width="stretch", key="roster_editor")
+        if edited != st.session_state.get("_roster_snapshot"):
+            st.session_state["_roster_snapshot"] = edited
+            S["roster"] = [
+                {**old, "name": row["Member"], "role": row["Role"], "bloc": row["Bloc"],
+                 "score": float(row["Hawk-dove"]), "is_mover": bool(row["Mover"])}
+                for old, row in zip(roster_rows, edited)]
+            mark_dirty()
+        C.note(
+            "Editable, because the seeded file asks you to fill it and a read-only table "
+            "could not honour that. Changes land in this meeting's own roster on Save, so "
+            "one meeting's read never silently rewrites another's.")
 
         if M.priced:
             st.divider()
@@ -696,3 +1021,7 @@ with RIGHT:
     st.download_button("Export Markdown", md,
                        file_name=f"rba-{M.meeting.key}.md",
                        mime="text/markdown", width="stretch")
+    if st.button("Save to runs/", width="stretch",
+                 help="Keeps a timestamped copy of this report alongside the repo."):
+        out = store.save_run(key, md, datetime.now().strftime("%Y%m%d-%H%M%S"))
+        st.success(f"Written to {out.relative_to(ROOT)}")

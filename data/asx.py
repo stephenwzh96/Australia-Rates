@@ -89,7 +89,7 @@ class Quote:
     month: date                      # first of the delivery month, parsed from the symbol
     symbol: str                      # the feed's own form, e.g. "IBQ2026"
     price: float | None = None
-    prev_close: float | None = None  # last TRADED price -- see `source`, not a mark
+    last_trade_price: float | None = None   # last TRADED price -- NOT a daily mark
     bid: float | None = None
     ask: float | None = None
     volume: float | None = None
@@ -228,7 +228,7 @@ def _parse(row: dict, kind: str) -> Quote | None:
 
     return Quote(
         month=month, symbol=symbol, price=price,
-        prev_close=_f(row, "priceContract", "priceLastTrade"),
+        last_trade_price=_f(row, "priceContract", "priceLastTrade"),
         bid=bid, ask=ask, volume=_f(row, "combinedVolume", "volume"),
         asof=asof, last_trade=_date("dateLastTrade"),
         change_one_day=_f(row, "priceChangeOneDay"), source=source, kind=kind,
@@ -283,7 +283,7 @@ def fetch_strip_cached(kind: str = "ib") -> list[Quote]:
 
 
 def _to_dict(q: Quote) -> dict:
-    return {"symbol": q.symbol, "price": q.price, "prev_close": q.prev_close,
+    return {"symbol": q.symbol, "price": q.price, "last_trade_price": q.last_trade_price,
             "bid": q.bid, "ask": q.ask, "volume": q.volume,
             "change_one_day": q.change_one_day, "source": q.source,
             "asof": q.asof.isoformat() if q.asof else None,
@@ -301,7 +301,7 @@ def _from_dict(r: dict, kind: str) -> Quote:
             return None
 
     return Quote(month=month, symbol=r.get("symbol", ""), price=r.get("price"),
-                 prev_close=r.get("prev_close"), bid=r.get("bid"), ask=r.get("ask"),
+                 last_trade_price=r.get("last_trade_price"), bid=r.get("bid"), ask=r.get("ask"),
                  volume=r.get("volume"), change_one_day=r.get("change_one_day"),
                  source=r.get("source", "settlement"),
                  asof=_d("asof"), last_trade=_d("last_trade"), kind=kind)
