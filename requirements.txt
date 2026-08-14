@@ -1,0 +1,7 @@
+streamlit>=1.40
+pandas>=2.2
+numpy>=1.26
+altair>=5.4
+plotly>=5.0
+requests>=2.32
+pytest>=8.0
