@@ -46,7 +46,9 @@ No Streamlit imports, and no `data/` imports: every function here takes plain
 
 from __future__ import annotations
 
+import datetime as _dt
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
@@ -376,3 +378,170 @@ def derive_ratio(numerator: Series, denominator: Series, scale: float = 100.0,
             when = max(n_d, d_d)
             rows = [r for r in rows if r[0] < when] + [(when, n_v / d_v * scale)]
     return rows
+
+
+# --------------------------------------------------------------------------
+# Labour market flows
+# --------------------------------------------------------------------------
+# The unemployment rate is a stock, and a stock can sit still while the flows
+# underneath it turn. Three series that turn first, all put on one z-score axis
+# because they are in incompatible units -- a transition rate, a tenure share
+# and a wage growth rate -- and the question asked of them is about direction
+# rather than level.
+
+# The flow measures are plotted led by a quarter against wages. Tightness shows
+# up in the flows before it shows up in pay: a worker who moves in March
+# negotiates a wage that lands in the June index. Led rather than lagged, so
+# the flow line sits above the wage print it is meant to explain.
+FLOW_LEAD_QUARTERS = 1
+
+
+def job_finding_rate(flows: dict[str, Series],
+                     employed: Sequence[str] = ("Employed full-time",
+                                                "Employed part-time"),
+                     unemployed: str = "Unemployed") -> list[tuple[date, float]]:
+    """Share of last month's unemployed who are employed this month.
+
+    The denominator is everyone who was unemployed a month ago, recovered by
+    adding up every flow OUT of unemployment -- including the flow back into
+    unemployment, which is the largest of them. Taking it from the published
+    unemployment level instead would mix two different weightings: the flows
+    cube reweights the matched sample, so its own row totals are the only
+    denominator the numerator is consistent with.
+    """
+    out_of_u = {k: v for k, v in flows.items() if k.startswith(f"{unemployed}>")}
+    if not out_of_u:
+        return []
+    found = [v for k, v in out_of_u.items()
+             if k.split(">", 1)[1] in set(employed)]
+    if not found:
+        return []
+
+    total: dict[date, float] = {}
+    for obs in out_of_u.values():
+        for d, v in obs:
+            total[d] = total.get(d, 0.0) + v
+    hired: dict[date, float] = {}
+    for obs in found:
+        for d, v in obs:
+            hired[d] = hired.get(d, 0.0) + v
+
+    return [(d, hired[d] / total[d] * 100.0)
+            for d in sorted(hired) if total.get(d)]
+
+
+def job_switching_rate(under_12m: Series, over_12m: Series
+                       ) -> list[tuple[date, float]]:
+    """Employed under a year with their current employer, as a share of all.
+
+    A proxy, and worth naming as one: Australia publishes no quits rate, so
+    this stands in for one. It counts anyone who started a job in the last year
+    — which includes people who moved from unemployment or from outside the
+    labour force, not only people who switched between jobs. The level is
+    therefore higher than a true switching rate; the direction is the signal.
+    """
+    rows = _join(under_12m, over_12m)
+    return [(d, vals[0] / (vals[0] + vals[1]) * 100.0)
+            for d, vals in rows if (vals[0] + vals[1])]
+
+
+def to_quarterly(series: Series) -> list[tuple[date, float]]:
+    """Average a monthly series within each calendar quarter.
+
+    Averaged rather than sampled at quarter end: a single month of the Labour
+    Force survey carries enough sampling noise that picking one and discarding
+    the other two would put that noise straight into the z-score.
+    """
+    buckets: dict[tuple[int, int], list[float]] = {}
+    for d, v in series:
+        buckets.setdefault((d.year, (d.month - 1) // 3), []).append(v)
+    return [(date(y, q * 3 + 1, 1), sum(vs) / len(vs))
+            for (y, q), vs in sorted(buckets.items())]
+
+
+def lead(series: Series, quarters: int = FLOW_LEAD_QUARTERS
+         ) -> list[tuple[date, float]]:
+    """Shift a quarterly series FORWARD, so period t carries t+n's reading."""
+    rows = sorted(series, key=lambda p: p[0])
+    if quarters <= 0:
+        return list(rows)
+    return [(rows[i][0], rows[i + quarters][1])
+            for i in range(len(rows) - quarters)]
+
+
+def zscores(series: Series, start: date | None = None,
+            end: date | None = None) -> list[tuple[date, float]]:
+    """Every observation as a z-score against the window's mean and sd.
+
+    The same arithmetic the indicator panel scores one reading with, applied
+    across the whole series so it can be plotted. Window defaults to the
+    series' own full history, which is what "against its long-run average"
+    means on a chart with no window control of its own.
+    """
+    rows = sorted(series, key=lambda p: p[0])
+    if len(rows) < 2:
+        return []
+    lo = start or rows[0][0]
+    hi = end or rows[-1][0]
+    stats = window_stats(rows, lo, hi)
+    if stats is None or stats.sd <= 0:
+        return []
+    return [(d, (v - stats.mean) / stats.sd) for d, v in rows]
+
+
+def parse_pasted_series(text: str) -> list[tuple[date, float]]:
+    """A pasted two-column series -> observations. Never raises.
+
+    For the commercial series with no public feed. Every terminal exports the
+    same rough shape -- a date and a number per line -- so the parser is
+    deliberately loose about the separator (comma, tab or whitespace), about a
+    header row, and about the date format, and simply drops any line it cannot
+    read rather than refusing the paste. A partly-readable paste is worth more
+    than an error message.
+
+    Dates accepted as ISO (2026-06-01), Australian (30/06/2026), or a bare
+    month (Jun-2026, 2026-06). Day-first, not month-first: the source is an
+    Australian terminal.
+    """
+    out: dict[date, float] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [p for p in re.split(r"[,\t;]|\s{2,}|\s+", line) if p]
+        if len(parts) < 2:
+            continue
+        when = _parse_any_date(parts[0])
+        if when is None:
+            continue
+        try:
+            value = float(parts[-1].replace("%", "").replace(",", ""))
+        except ValueError:
+            continue
+        out[when] = value
+    return sorted(out.items())
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
+
+
+def _parse_any_date(token: str) -> date | None:
+    token = token.strip().strip('"')
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return _dt.datetime.strptime(token, fmt).date()
+        except ValueError:
+            pass
+    m = re.fullmatch(r"([A-Za-z]{3})[-/ ]?(\d{2,4})", token)
+    if m and m.group(1).lower() in _MONTHS:
+        year = int(m.group(2))
+        return date(year + 2000 if year < 100 else year,
+                    _MONTHS[m.group(1).lower()], 1)
+    m = re.fullmatch(r"(\d{4})[-/](\d{1,2})", token)
+    if m:
+        month = int(m.group(2))
+        if 1 <= month <= 12:
+            return date(int(m.group(1)), month, 1)
+    return None

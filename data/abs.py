@@ -302,9 +302,113 @@ DURATION_BUCKETS = (
 MEDIUM_TERM_BUCKETS = DURATION_BUCKETS[1:4]
 
 
+# LMS1 is the gross-flows cube: every respondent's labour force status this
+# month against their status last month, monthly from July 2007. It is the only
+# public route to a JOB-FINDING RATE -- what share of the unemployed found work
+# -- which moves months before the unemployment rate does, because a rate can
+# sit still while the flows underneath it collapse.
+#
+# It costs 100MB and a million rows, so it is aggregated to national totals
+# during the parse and only the aggregate is cached: 228 months by 16 status
+# pairs, a few thousand numbers instead of a million.
+GROSS_FLOWS = "LMS1.xlsx"
+
+# Table 17 carries how long each employed person has been with their current
+# employer. Under twelve months, as a share of everyone employed, is the
+# standard public proxy for a JOB-SWITCHING RATE -- Australia has no quarterly
+# quits series, and this is what stands in for one.
+TENURE = "6291017.xlsx"
+
+EMPLOYED_STATUSES = ("Employed full-time", "Employed part-time")
+UNEMPLOYED_STATUS = "Unemployed"
+
+TENURE_UNDER_12M = ("With current employer or business for fewer than 12 months ;"
+                    "  Employed total ;  Persons ;")
+TENURE_OVER_12M = ("With current employer or business for 12 months or more ;"
+                   "  Employed total ;  Persons ;")
+
+
 def labour_force_rates() -> Workbook:
     """X29 -- unemployment, underemployment and youth unemployment rates."""
     return workbook(X29)
+
+
+def job_tenure() -> Workbook:
+    """Table 17 -- employed persons by months with their current employer."""
+    return workbook(TENURE, detailed=True)
+
+
+def _parse_gross_flows(blob: bytes) -> dict[str, list[Observation]]:
+    """Aggregate LMS1's `Data 1` sheet to national flows by status pair.
+
+    The sheet is a flat pivot export -- one row per month, sex, age, state and
+    status pair -- so a national flow is a sum over every demographic cell, not
+    a row that can be looked up. Keys come back as `"previous>current"`.
+    """
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+        ws = wb["Data 1"]
+    except Exception:
+        return {}
+
+    acc: dict[tuple[str, date], float] = {}
+    try:
+        for row in ws.iter_rows(min_row=5, values_only=True):
+            when = row[0]
+            if not isinstance(when, _dt.datetime) or not isinstance(row[6], (int, float)):
+                continue
+            key = (f"{row[5]}>{row[4]}", when.date())
+            acc[key] = acc.get(key, 0.0) + float(row[6])
+    except Exception:
+        pass
+
+    out: dict[str, list[Observation]] = {}
+    for (pair, when), value in acc.items():
+        out.setdefault(pair, []).append(Observation(when, value))
+    for obs in out.values():
+        obs.sort(key=lambda o: o.date)
+    return out
+
+
+def gross_flows() -> dict[str, list[Observation]]:
+    """`{"previous>current": monthly national flow in thousands}`.
+
+    Behind the same release-keyed disk cache as everything else here, which
+    matters more for this one than for any other source: the download is 100MB
+    and the parse is half a minute, and both happen once a month.
+    """
+    period = latest_release(LF_LANDING)
+    key = _cache_key(GROSS_FLOWS, period or "")
+
+    def from_cache() -> dict[str, list[Observation]]:
+        rows: dict[str, list[Observation]] = {}
+        for row in cache.read_json(key):
+            obs = []
+            for pair in row.get("o", []):
+                try:
+                    obs.append(Observation(date.fromisoformat(pair[0]), float(pair[1])))
+                except (ValueError, TypeError, IndexError):
+                    continue
+            if obs:
+                rows[row.get("h", "")] = obs
+        return rows
+
+    if period is None:
+        return from_cache()
+    cached = from_cache()
+    if cached:
+        return cached
+
+    blob = _fetch_workbook(LF_BASE.format(period=period, fname=GROSS_FLOWS))
+    if blob is None:
+        return {}
+    parsed = _parse_gross_flows(blob)
+    if parsed:
+        cache.write_json(key, [
+            {"h": pair, "o": [[o.date.isoformat(), o.value] for o in obs]}
+            for pair, obs in parsed.items()])
+    return parsed
 
 
 def duration_counts() -> Workbook:

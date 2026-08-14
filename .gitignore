@@ -7,3 +7,7 @@ data/cache/
 runs/
 .pytest_cache/
 .DS_Store
+
+# A pasted licensed series (NAB capacity utilisation) is the user's data and
+# their licensor's -- it stays on the machine that pasted it.
+meetings/_manual_series.json

@@ -1184,3 +1184,84 @@ def cpi_cycle(split, p: Palette, start: date | None = None,
                           vintage, p)
     return _apply(alt.layer(*_lines(df, [cyc, non], p, "%", zero_rule=True))
                   .properties(title=title), p, height)
+
+
+# ---------------------------------------------------------------------------
+# Labour market flows and capacity
+# ---------------------------------------------------------------------------
+
+def capacity_vs_unemployment(capacity, unemployment, p: Palette,
+                             start: date | None = None,
+                             vintage: "Vintage | None" = None,
+                             height: int = 300) -> alt.LayerChart:
+    """Capacity utilisation against the unemployment rate, utilisation inverted.
+
+    Two y-scales, which this app otherwise refuses -- the Inflation tab's
+    breadth chart is drawn as stacked panels for exactly that reason. The
+    difference is what the reader is being asked to do. There the question was
+    whether one series leads another, and independent scales manufacture
+    crossings that answer it falsely. Here the two ARE the same quantity read
+    two ways: firms running out of spare capacity and workers finding jobs, in
+    percent, on levels a century apart. Inverting utilisation is what makes
+    them comparable at all, and pinning it to a second axis is how the source
+    does it. The FOMC version ships the same construction for layoffs against
+    quits.
+
+    The honest caveat rides on the chart rather than here: the axes are pinned
+    by the data's own range, so the vertical gap between the lines carries no
+    meaning. Only their shapes do.
+    """
+    cdf = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                               for d, v in capacity]) if capacity
+                 else _EMPTY.copy()[["when", "value"]], start)
+    udf = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                               for d, v in unemployment]) if unemployment
+                 else _EMPTY.copy()[["when", "value"]], start)
+    axis = _time_axis(udf if cdf.empty else cdf)
+
+    cap = alt.Chart(cdf).mark_line(strokeWidth=LINE_WIDTH,
+                                   color=p.categorical[6]).encode(
+        x=alt.X("when:T", axis=axis),
+        y=alt.Y("value:Q",
+                scale=alt.Scale(zero=False, nice=True, reverse=True),
+                axis=alt.Axis(title="capacity utilisation, % (inverted)")),
+        tooltip=[alt.Tooltip("when:T", title="month", format="%b %Y"),
+                 alt.Tooltip("value:Q", title="capacity utilisation, %",
+                             format=".1f")])
+    une = alt.Chart(udf).mark_line(strokeWidth=LINE_WIDTH,
+                                   color=p.categorical[7]).encode(
+        x=alt.X("when:T", axis=axis),
+        y=alt.Y("value:Q", scale=alt.Scale(zero=False, nice=True),
+                axis=alt.Axis(title="unemployment rate, %", orient="right",
+                              gridColor="transparent")),
+        tooltip=[alt.Tooltip("when:T", title="month", format="%b %Y"),
+                 alt.Tooltip("value:Q", title="unemployment rate, %",
+                             format=".1f")])
+
+    layers = [cap, une] if not cdf.empty else [une]
+    chart = alt.layer(*layers)
+    if not cdf.empty:
+        chart = chart.resolve_scale(y="independent")
+    title = vintage_title("Capacity utilisation against unemployment", vintage, p)
+    return _apply(chart.properties(title=title), p, height)
+
+
+def labour_flows(series: dict[str, list[tuple[date, float]]], order: list[str],
+                 p: Palette, start: date | None = None,
+                 vintage: "Vintage | None" = None,
+                 height: int = 300) -> alt.LayerChart:
+    """Job-finding, job-switching and wage growth, each as its own z-score.
+
+    Z-scores because the three are in incompatible units -- a transition rate,
+    a tenure share and a quarterly wage change -- and the question asked of
+    them is where each sits against its own history, not how they compare in
+    level. It is the same arithmetic the indicator panel above scores a single
+    reading with, run across the whole series so it can be plotted.
+    """
+    df = _since(_tidy(series, order), start)
+    return _apply(
+        alt.layer(*_lines(df, order, p, "z-score vs the series' own history",
+                          y_format=".1f", zero_rule=True))
+        .properties(title=vintage_title(
+            "Job-finding and job-switching against wage growth", vintage, p)),
+        p, height)

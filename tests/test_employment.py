@@ -222,3 +222,115 @@ def test_every_indicator_has_a_source_and_a_direction():
     assert sum(1 for i in emp.INDICATORS if i.manual) == 3
     for i in emp.INDICATORS:
         assert i.source and i.label
+
+
+# --------------------------------------------------------------------------
+# Labour market flows
+# --------------------------------------------------------------------------
+# The gross-flows cube keys every series "previous>current", so the direction
+# of the arrow is load-bearing: reading it backwards turns a job-finding rate
+# into a job-losing rate and both are plausible-looking numbers.
+
+FLOWS = {
+    "Unemployed>Employed full-time": [(date(2026, 5, 1), 60.0), (date(2026, 6, 1), 40.0)],
+    "Unemployed>Employed part-time": [(date(2026, 5, 1), 40.0), (date(2026, 6, 1), 60.0)],
+    "Unemployed>Unemployed": [(date(2026, 5, 1), 300.0), (date(2026, 6, 1), 300.0)],
+    "Unemployed>Not in the labour force (NILF)": [(date(2026, 5, 1), 100.0),
+                                                  (date(2026, 6, 1), 100.0)],
+    # Flows that do not start from unemployment must not enter either side.
+    "Employed full-time>Employed full-time": [(date(2026, 5, 1), 9000.0),
+                                              (date(2026, 6, 1), 9000.0)],
+    "Not in the labour force (NILF)>Employed full-time": [(date(2026, 5, 1), 200.0),
+                                                          (date(2026, 6, 1), 200.0)],
+}
+
+
+def test_job_finding_rate_is_hires_over_everyone_who_was_unemployed():
+    """100 of 500 found work: 20%, both months, whichever way they split."""
+    assert emp.job_finding_rate(FLOWS) == [
+        (date(2026, 5, 1), pytest.approx(20.0)),
+        (date(2026, 6, 1), pytest.approx(20.0)),
+    ]
+
+
+def test_the_denominator_comes_from_the_flows_not_the_published_level():
+    """Everyone who WAS unemployed, including those still unemployed.
+
+    Dropping the stay-unemployed flow is the easy mistake -- it is the biggest
+    row in the block, and without it the rate reads 50% instead of 20%.
+    """
+    without_stayers = {k: v for k, v in FLOWS.items() if k != "Unemployed>Unemployed"}
+    assert emp.job_finding_rate(without_stayers)[0][1] == pytest.approx(50.0)
+
+
+def test_flows_into_employment_from_outside_are_not_job_finding():
+    """NILF -> employed is someone entering, not an unemployed person hired."""
+    assert emp.job_finding_rate(FLOWS)[0][1] == pytest.approx(20.0)
+    assert "Not in the labour force (NILF)>Employed full-time" in FLOWS
+
+
+def test_job_finding_rate_survives_a_cube_with_no_unemployment_block():
+    assert emp.job_finding_rate({"Employed full-time>Unemployed":
+                                        [(date(2026, 6, 1), 5.0)]}) == []
+
+
+def test_job_switching_rate_is_a_share_of_everyone_employed():
+    under = [(date(2026, 2, 1), 2000.0)]
+    over = [(date(2026, 2, 1), 8000.0)]
+    assert emp.job_switching_rate(under, over) == [
+        (date(2026, 2, 1), pytest.approx(20.0))]
+
+
+def test_quarterly_averages_rather_than_sampling_one_month():
+    """Three months of survey noise averaged, not one month kept."""
+    monthly = [(date(2026, 1, 1), 10.0), (date(2026, 2, 1), 20.0),
+               (date(2026, 3, 1), 30.0), (date(2026, 4, 1), 40.0)]
+    assert emp.to_quarterly(monthly) == [
+        (date(2026, 1, 1), pytest.approx(20.0)),
+        (date(2026, 4, 1), pytest.approx(40.0)),
+    ]
+
+
+def test_lead_shifts_forward_and_shortens_the_series():
+    rows = [(date(2026, 1, 1), 1.0), (date(2026, 4, 1), 2.0), (date(2026, 7, 1), 3.0)]
+    assert emp.lead(rows, 1) == [(date(2026, 1, 1), 2.0),
+                                        (date(2026, 4, 1), 3.0)]
+    assert emp.lead(rows, 0) == rows
+
+
+def test_zscores_centre_and_scale_the_whole_series():
+    rows = [(date(2026, m, 1), v) for m, v in
+            zip((1, 2, 3, 4, 5), (1.0, 2.0, 3.0, 4.0, 5.0))]
+    z = dict(emp.zscores(rows))
+    assert z[date(2026, 3, 1)] == pytest.approx(0.0)        # the mean
+    assert z[date(2026, 5, 1)] == pytest.approx(1.2649, abs=1e-4)
+    assert emp.zscores([(date(2026, 1, 1), 1.0)]) == []
+    assert emp.zscores([(date(2026, m, 1), 5.0) for m in (1, 2, 3)]) == []
+
+
+# --------------------------------------------------------------------------
+# Pasted series
+# --------------------------------------------------------------------------
+
+def test_a_paste_reads_every_format_a_terminal_exports():
+    rows = emp.parse_pasted_series(
+        "Date,Value\n"
+        "2026-06-01, 81.4\n"
+        "30/04/2026\t81.9\n"
+        "Mar-2026  82.1\n"
+        "2026-02, 81.7%\n"
+        "not a row at all\n")
+    assert [d for d, _ in rows] == [date(2026, 2, 1), date(2026, 3, 1),
+                                    date(2026, 4, 30), date(2026, 6, 1)]
+    assert [v for _, v in rows] == [81.7, 82.1, 81.9, 81.4]
+
+
+def test_a_paste_is_read_day_first():
+    """06/07/2026 is 6 July on an Australian terminal, not 7 June."""
+    (d, _), = emp.parse_pasted_series("06/07/2026, 80.0")
+    assert d == date(2026, 7, 6)
+
+
+def test_an_unreadable_paste_yields_nothing_rather_than_raising():
+    assert emp.parse_pasted_series("") == []
+    assert emp.parse_pasted_series("garbage\nmore garbage") == []

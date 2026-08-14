@@ -29,7 +29,9 @@ meeting, so a meeting can be bookmarked.
 | RBA table F1 | daily cash rate target, AONIA, BBSW 1/3/6-month | no |
 | RBA table H5 | labour force, unemployment level, job vacancies | no |
 | ABS Labour Force | unemployment, underemployment, youth rates (Excel time series) | no |
-| ABS Labour Force Detailed | unemployed by duration of job search | no |
+| ABS Labour Force Detailed | unemployed by duration of job search; months with current employer | no |
+| ABS Labour Force LMS1 | gross flows — every status transition, month to month | no |
+| RBA table H4 | wage price index, quarterly and year-ended | no |
 | ABS CPI table 18 | quarterly expenditure-class indexes, index-point contributions | no |
 | ABS CPI appendix 1a | 87 seasonally adjusted class indexes, trimmed mean, from 1982 | no |
 | ABS CPI table 6 | monthly trimmed mean and ex-volatiles measures | no |
@@ -163,6 +165,44 @@ Internet Vacancy Index is a genuinely free monthly job-ads series and the
 natural substitute, but it blocks automated access. The honest place for these
 three is a typed field fed from a terminal that already licences them.
 
+### Two charts about the path, not the level
+
+The panel above is one reading per series. Under it sit two charts the panel
+cannot show.
+
+**Capacity utilisation against unemployment**, utilisation inverted on its own
+axis. This is the one dual-axis chart in the app, and the Inflation tab's
+breadth chart is drawn as stacked panels specifically to avoid being a second
+one — so the difference is worth stating. There the question was whether one
+series leads another, and independent scales manufacture crossings that answer
+it falsely. Here the two *are* the same quantity read two ways — firms running
+out of spare capacity, workers finding jobs — in percent, on levels a century
+apart, and inverting utilisation is what makes them comparable at all. The
+caveat rides on the chart: the axes are pinned by each series' own range, so
+the vertical gap between the lines means nothing and only their shapes do.
+
+NAB's capacity utilisation is commercial with no public feed, so the chart
+takes a **paste** — one row per period, a date and a number, read as ISO,
+Australian day-first, or a bare month, with unreadable lines skipped rather
+than the paste rejected. It lands in `meetings/_manual_series.json`, which is
+gitignored: a licensed series belongs on the machine that licensed it.
+
+**Job-finding and job-switching against wage growth**, all three as z-scores
+because a transition rate, a tenure share and a quarterly wage change have no
+common unit. The flow measures lead wages by a quarter — a worker who moves in
+March negotiates a rate that lands in the June index.
+
+- The **job-finding rate** is the share of last month's unemployed who are
+  employed this month, out of ABS gross flows. The denominator is everyone who
+  *was* unemployed, recovered by adding every flow out of unemployment
+  including the flow back into it — which is the largest of them, and dropping
+  it reads 50% where the answer is 20%. It costs a 100MB download and a million
+  rows, so the parse aggregates to national totals and caches only those.
+- The **job-switching rate** is a proxy and says so: Australia publishes no
+  quits rate, so this counts everyone under a year with their current employer,
+  which includes people who arrived from unemployment rather than from another
+  job. The level is therefore too high; the direction is the signal.
+
 Two things the tab surfaces rather than hides. The **two ABS releases sit on
 different months** — headline Labour Force at June 2026, Detailed still at March
 after the April survey changes — so the medium-term unemployment rate is months
@@ -293,12 +333,12 @@ a test can call directly.
 .venv/bin/python -m pytest tests -q
 ```
 
-81 tests. Beyond the golden values, they pin the things that had to be
+93 tests. Beyond the golden values, they pin the things that had to be
 re-derived rather than translated: the ACT/365 DV01s, the IB averaging window,
 IR's binary capture and its last-trading-day rule, Anzac Day never substituting
 in NSW, and the strip's refusal to invent a spot rate it cannot recover.
 
-Eleven are regressions against bugs this codebase actually had, not
+Twelve are regressions against bugs this codebase actually had, not
 hypotheticals — a circular basis that returned the IB path unchanged, a
 volatility estimate divided by a contract capture that has no meaning for a
 rate series, a bill tenor starting a day early, a negative move size crashing
