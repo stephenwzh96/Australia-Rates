@@ -72,13 +72,24 @@ CAPACITY_MA_WINDOW = 3
 
 # ------------------------------------------------------------------ data
 
+@st.cache_resource(show_spinner=False)
+def _fetch_clock() -> dict[str, datetime]:
+    """Wall-clock time of the last real fetch. cache_data's own cache is
+    process-wide, not per-session -- session_state would only ever show the
+    time for whichever tab happened to trigger the miss, so the clock has to
+    be shared too."""
+    return {}
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ib():
+    _fetch_clock()["ib"] = datetime.now()
     return asx.fetch_strip_cached("ib")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ir():
+    _fetch_clock()["ir"] = datetime.now()
     return asx.fetch_strip_cached("ir")
 
 
@@ -670,9 +681,27 @@ def rebuild():
 M = rebuild()
 
 # The priced path, and the bill curve laid against it.
+#
+# The anchor is derived from the strip, but the Curve tab lets it be typed
+# over -- so the override is read here, before the ladder is built, rather
+# than inside the tab. Streamlit reruns top to bottom and a widget's value is
+# already in session_state by the time the script restarts, so reading it up
+# here costs no lag; building the ladder inside the tab instead would leave
+# the Verdict rail and its "strip says" panel a rerun behind the typed spot.
+#
+# The key carries the meeting in its name rather than being reset on a change:
+# a spot left over from another meeting's anchor silently skews every step on
+# the ladder, and a per-meeting key makes that impossible by construction.
+# Nothing here ever WRITES that key -- the widget owns it outright. Seeding a
+# widget's key and omitting `value=` is the pattern the US version uses, and it
+# silently broke in Streamlit 1.61: the input renders 0.0000 while the ladder
+# below is built off the real derived spot. Passing the derived number as
+# `value=` and letting the widget own its key works on both.
 strip_spot = stripmod.implied_spot(ib_quotes, MEETINGS, as_of=TODAY)
-anchor = strip_spot if strip_spot is not None else spot["cash"]
-PATH = (stripmod.decompose(MEETINGS, ib_quotes, anchor, M.size,
+spot_derived = strip_spot if strip_spot is not None else spot["cash"]
+CURVE_SPOT_KEY = f"curve_spot_{S.get('meeting')}"
+anchor = st.session_state.get(CURVE_SPOT_KEY, spot_derived)
+PATH = (stripmod.decompose(MEETINGS, ib_quotes, float(anchor), M.size,
                            stale_codes=ib_stale, as_of=TODAY)
         if anchor is not None else stripmod.StripPath(0.0, M.size, error="no cash rate anchor"))
 BILLS = bbswmod.analyse(ir_quotes, PATH, MEETINGS, M.size, ir_stale, horizon,
@@ -900,98 +929,394 @@ with LEFT:
 
     # ------------------------------------------------------------ 2. Curve
     elif section == "Curve":
-        C.section("The priced path", "Backed out of the ASX IB strip.")
-        if not PATH.ok:
-            st.warning(PATH.error or "No priced path available.")
+        chdr, chlp = st.columns([1, 0.06], vertical_alignment="center")
+        with chdr:
+            C.section("Step 1a — what the strip has already priced",
+                      "The whole calendar, read off futures. Every number below is derived "
+                      "from prices and the meeting dates, not taken from anyone's published "
+                      "probability.")
+        with chlp:
+            C.formula_help(
+                r"r_{\text{after}} = \frac{r_{\text{month}} N - r_{\text{before}} n_1}{n_2}",
+                "An IB contract settles on the month's AVERAGE cash rate, so a month "
+                "containing a decision prices a blend of the old rate and the new one, "
+                "weighted by days. Inverting that blend recovers the rate the market "
+                "expects after the meeting; the step is the difference, and the probability "
+                "is the step over one full move. Dividing by n2 is why a late-month meeting "
+                "is read off the FOLLOWING contract instead -- with two days of capture, a "
+                "1bp error in the starting rate becomes 15bp of imaginary priced move, and "
+                "the RBA's meetings sit late in their months far more often than the Fed's.",
+                "step / move size = implied probability", "strip")
+
+        live = [q for q in ib_quotes if q.ok]
+
+        if not live:
+            if M.meeting.end < TODAY:
+                st.info(f"{M.meeting.label} has already happened, and its contracts have "
+                        "expired and stopped quoting. The Curve tab only speaks for "
+                        "meetings still ahead — select a future one to price the strip.")
+            else:
+                st.warning("No interbank cash rate quotes came back. Everything else in the "
+                           "app still works from the numbers you have typed.")
+                first = next((q for q in ib_quotes if q.error), None)
+                if first:
+                    C.note(f"{first.symbol}: {first.error}")
         else:
-            src = "the strip itself" if strip_spot is not None else "RBA table F1"
-            C.vintage(f"Spot {PATH.spot:.3f}% from {src}. "
-                      f"Strip settled {ib_ref or 'unknown'}. "
-                      f"Reliable coverage to {horizon or 'unknown'}.")
-            if strip_spot is None:
-                C.note(
-                    "The strip cannot recover spot right now — a decision has already taken "
-                    "effect inside the front contract's month, which leaves one more unknown "
-                    "than there are equations. Anchored on the published cash rate target "
-                    "instead rather than inventing one.")
+            # No magic default. When the strip cannot pin spot, saying so and
+            # asking beats printing a confident ladder built on a guess.
+            if anchor is None:
+                st.warning(
+                    "**Spot cash cannot be derived from the strip at this anchor.** "
+                    "A decision has already taken effect inside the front month and "
+                    "another lands before the next meeting-free contract, which leaves "
+                    "the strip one unknown short of solvable. Type the prevailing cash "
+                    "rate below — every step is measured from it, so a guess here is a "
+                    "wrong ladder, not a rough one.")
 
-            upcoming = [s for s in PATH.steps if s.meeting.end >= TODAY]
-            C.table(
-                ["Meeting", "Contract", "Read", "Step", "Cumulative", "Implied prob", "Flag"],
-                [[s.label, s.code, "clean" if s.is_clean else "inverted",
-                  f"{s.step_bp:+.1f}bp", f"{s.cum_bp:+.1f}bp", f"{s.prob:.1%}",
-                  "stale" if s.stale else ("ambiguous" if s.ambiguous else "")]
-                 for s in upcoming],
-                numeric=(3, 4, 5))
-            C.note(
-                "A **clean** read comes from a month sitting wholly at the new rate, so it "
-                "prices it outright. An **inverted** read un-blends the meeting month, which "
-                "divides by the days after the decision — reliable in the middle of a month, "
-                "brutally leveraged at the end of one. The RBA's late-month meetings are "
-                "exactly where that matters, which is why the source is shown per row.")
-            step_here = PATH.step_for(M.meeting.key)
-            if step_here is not None and step_here.reliable:
-                if st.button(
-                        f"Use the strip's {step_here.step_bp:+.1f}bp as points priced",
-                        help="Adopts the market's own number for THIS meeting so your q "
-                             "is measured against it rather than against a stale entry."):
-                    trade["points"] = round(abs(step_here.step_bp), 2)
-                    mark_dirty()
-                    st.rerun()
-            if PATH.excluded_count:
-                st.caption(
-                    f"{PATH.excluded_count} step(s) solved off a contract that is not trading "
-                    "and are kept out of the headline numbers below.")
+            g1, g2, g3 = st.columns([1, 1, 1.1], vertical_alignment="center")
+            with g1:
+                st.number_input(
+                    "Spot cash rate (%)", key=CURVE_SPOT_KEY,
+                    value=float(spot_derived) if spot_derived is not None else None,
+                    step=0.01, format="%.4f",
+                    placeholder="type the cash rate",
+                    help="Backed out of the strip: either a meeting-free contract, or the "
+                         "front month inverted against one. Falls back to the RBA's "
+                         "published target when the strip cannot pin it. Override it if "
+                         "the cash rate has already moved month-to-date — every step below "
+                         "is measured from here.")
+            with g2:
+                st.metric("Curve as of",
+                          ib_ref.strftime("%d %b %Y") if ib_ref else "--",
+                          f"{len(live)}/{len(ib_quotes)} interbank", delta_color="off")
+                refreshed = _fetch_clock().get("ib")
+                if refreshed:
+                    mins = (datetime.now() - refreshed).total_seconds() / 60
+                    when = "just now" if mins < 1 else f"{mins:.0f}m ago"
+                    C.note(f"Refreshed {refreshed:%H:%M} · {when}")
+            with g3:
+                st.markdown('<div style="height:1.1rem"></div>', unsafe_allow_html=True)
+                # on_click, not an inline pop: `curve_spot` is a widget key and
+                # is locked once the input above rendered -- the callback runs
+                # before the rerun, when it is still free.
+                def _clear_curve_spot():
+                    fetch_ib.clear()
+                    fetch_ir.clear()
+                    st.session_state.pop(CURVE_SPOT_KEY, None)
+                st.button("Refresh quotes", width="stretch",
+                          on_click=_clear_curve_spot)
 
-            st.altair_chart(charts.priced_path(PATH.steps, PATH.spot, P),
-                            use_container_width=True)
+            if anchor is None:
+                pass          # the warning above stands in for the ladder
+            elif not PATH.ok:
+                st.warning(PATH.error or "The strip could not be decomposed.")
+            else:
+                # A spot far from the front contract means one of the two is
+                # wrong, and every step inherits the error amplified.
+                front_implied = live[0].implied_rate
+                _spot = float(anchor)
+                if front_implied is not None and abs(_spot - front_implied) > 0.50:
+                    st.warning(
+                        f"Spot of {_spot:.3f}% is {abs(_spot - front_implied) * 100:.0f}bp "
+                        f"from what {live[0].code} implies ({front_implied:.3f}%). One of "
+                        "the two is wrong, and the ladder below amplifies the gap.")
 
-            flagged = [c for c in PATH.checks if c.flagged]
-            if flagged:
-                C.section("Months that should reprint the carried rate, and do not")
-                C.table(["Month", "Contract", "Implied", "Carried", "Difference"],
-                        [[f"{c.month:%b %Y}", c.code, f"{c.implied:.3f}%",
-                          f"{c.expected:.3f}%", f"{c.diff_bp:+.1f}bp"] for c in flagged])
+                view = st.segmented_control(
+                    "Instrument", ["Interbank cash (IB)", "90 day bank bills (IR)"],
+                    default="Interbank cash (IB)",
+                    label_visibility="collapsed") or "Interbank cash (IB)"
 
-        st.divider()
-        C.section("90 day bank bills", "Where the same question stops working.")
-        if not BILLS.ok:
-            st.warning(BILLS.error or "No bank bill curve available.")
-        else:
-            C.note(
-                "An IR contract settles on a **single 3-month BBSW fix**, not an average, so "
-                "there is no month to un-blend and no per-meeting probability to recover from "
-                "it. And BBSW is a bank credit rate, not a policy rate — an IR price is the "
-                "expected cash path *plus* a credit and term spread. The basis column is that "
-                "spread, measured against the IB path over the same 90 days.")
-            C.table(
-                ["Contract", "Fix", "Covers", "BBSW", "IB path", "Basis", "Cash-equiv", "Flag"],
-                [[p.code, f"{p.fix_date:%d %b %y}", p.window_label, f"{p.implied:.3f}%",
-                  "—" if p.expected is None else f"{p.expected:.3f}%",
-                  "—" if p.basis_bp is None else f"{p.basis_bp:+.1f}bp",
-                  "—" if p.cash_equivalent is None else f"{p.cash_equivalent:.3f}%",
-                  "beyond IB" if p.beyond_horizon else ("stale" if p.stale else "")]
-                 for p in BILLS.periods[:10]])
-            if spot["spot_basis_bp"] is not None:
-                C.note(
-                    f"**Cash-equiv** strips today's observed spread of "
-                    f"{spot['spot_basis_bp']:+.1f}bp (3-month BBSW {spot['bbsw']:.3f}% less the "
-                    f"{spot['cash']:.3f}% target) off the bill's rate. That is an assumption — "
-                    "that the credit spread holds to the fix — and it is stated rather than "
-                    "hidden. It is deliberately NOT computed from the basis column, which "
-                    "would be circular and would just hand back the IB path.")
-            comparable = [p for p in BILLS.periods if p.comparable and not p.stale]
-            if comparable:
-                st.altair_chart(charts.bbsw_basis(comparable, P), use_container_width=True)
-                mb = BILLS.mean_basis_bp
-                hist = rba.historical_bbsw_ois_basis()
-                if mb is not None and hist:
-                    hist_mean = sum(o.value for o in hist) / len(hist)
-                    st.caption(
-                        f"Mean basis {mb:+.1f}bp across comparable contracts. The published "
-                        f"BBSW/OIS spread averaged {hist_mean:.1f}bp over 2011–2022 before the "
-                        "RBA retired the series, which is the only yardstick available for "
-                        "whether today's reading is wide or narrow.")
+                # ------------------------------------------ interbank cash
+                if view == "Interbank cash (IB)":
+                    k1, k2 = st.columns(2)
+                    k1.metric("Terminal",
+                              f"{PATH.terminal:.3f}%" if PATH.terminal else "--",
+                              f"{PATH.total_bp:+.0f}bp total", delta_color="off",
+                              help="Where the priced path ends inside the quoted strip.")
+                    pk = PATH.peak
+                    k2.metric("Peak priced", f"{pk.cum_bp:+.0f}bp" if pk else "--",
+                              pk.meeting.end.strftime("%b %Y") if pk else "--",
+                              delta_color="off",
+                              help="Furthest the market has priced from spot, and by when.")
+                    if PATH.excluded_count:
+                        C.note(f"Both figures ignore {PATH.excluded_count} meeting"
+                               f"{'s' if PATH.excluded_count > 1 else ''} at the back of "
+                               "the strip solved off contracts that are not printing. They "
+                               "stay in the ladder, marked, but a quote that has not traded "
+                               "in weeks does not get to set the terminal rate.")
+
+                    st.divider()
+                    lc, rc = st.columns([1.25, 1], gap="large")
+                    with lc:
+                        st.markdown("### The meeting ladder")
+                        rows, colours, marks = [], {}, []
+                        for i, stp in enumerate(PATH.steps):
+                            if stp.key == M.meeting.key:
+                                marks.append(i)
+                            flag = " ~" if stp.ambiguous else (" !" if stp.stale else "")
+                            rows.append([
+                                stp.label, f"{(stp.meeting.end - TODAY).days}d",
+                                stp.code + flag, f"{stp.step_bp:+.1f}",
+                                f"{stp.cum_bp:+.1f}", f"{stp.prob:.0%}",
+                                f"{stp.r_after:.3f}",
+                            ])
+                            colours[(i, 3)] = pnl_colour(stp.step_bp, P)
+                            colours[(i, 4)] = pnl_colour(stp.cum_bp, P)
+                        C.table(["Meeting", "Out", "Contract", "Step", "Cum",
+                                 "P(move)", "Rate after"],
+                                rows, numeric=(1, 3, 4, 5, 6),
+                                mark_rows=marks, colours=colours)
+                        C.note("▸ marks the meeting selected in the sidebar. Step is "
+                               "what this meeting alone has priced; Cum is the whole path "
+                               "from spot. ! = quote has not printed with the rest of the "
+                               "strip; ~ = two meetings share a contract month.")
+                    with rc:
+                        st.markdown("### The priced path")
+                        st.altair_chart(charts.priced_path(PATH.steps, _spot, P),
+                                        width="stretch", theme=None)
+                        if PATH.excluded_count:
+                            C.note("Dashed line, hollow dots = solved off a stale or "
+                                   "ambiguous contract (marked ! or ~ in the ladder) -- "
+                                   "same exclusion the Terminal and Peak figures apply.")
+
+                    st.divider()
+                    mine = PATH.step_for(M.meeting.key)
+                    st.markdown(f"### {M.meeting.label} — live vs the number you are "
+                                "sizing on")
+                    if mine is None:
+                        st.info("This meeting falls outside the quoted strip.")
+                    else:
+                        x1, x2, x3, x4 = st.columns([1, 1, 1, 1.1],
+                                                    vertical_alignment="center")
+                        typed = trade.get("points")
+                        x1.metric("Priced now", f"{mine.step_bp:+.2f}bp",
+                                  f"{mine.prob:.1%} of a {M.size:.0f}bp move",
+                                  delta_color="off")
+                        x2.metric("You have typed",
+                                  f"{typed:+.2f}bp" if typed is not None else "--",
+                                  "sidebar → Points priced", delta_color="off")
+                        with x3:
+                            if typed is not None:
+                                st.metric("Difference",
+                                          f"{mine.step_bp - float(typed):+.2f}bp",
+                                          "live minus typed", delta_color="off")
+                        with x4:
+                            if st.button("Use the live number", type="primary",
+                                         width="stretch"):
+                                trade["points"] = round(abs(mine.step_bp), 2)
+                                mark_dirty()
+                                st.rerun()
+                        C.note(
+                            f"Read off {mine.code} — "
+                            + ("the following month, which sits wholly at the new rate, "
+                               f"because {mine.month:%b}'s own contract captures only "
+                               f"{mine.capture_share:.0%} of it."
+                               if mine.is_clean else
+                               f"the meeting month itself, which captures "
+                               f"{mine.capture_share:.0%} ({mine.days_after} of "
+                               f"{mine.days_in_month} days) at the new rate."))
+
+                    st.divider()
+                    sc1, sc2 = st.columns([1, 1], gap="large")
+                    with sc1:
+                        st.markdown("### The strip")
+                        srows, scols = [], {}
+                        for i, q in enumerate(live):
+                            price_delta = q.change_one_day
+                            if price_delta == 0:
+                                price_delta = 0.0        # normalize -0.0 -> +0.0
+                            srows.append([
+                                q.code, f"{q.month:%b %Y}",
+                                f"{q.price:.4f}".rstrip("0").rstrip("."),
+                                f"{q.implied_rate:.3f}",
+                                f"{price_delta:+.4f}".rstrip("0").rstrip(".")
+                                if price_delta is not None else "--",
+                                "stale" if q.code in ib_stale else "",
+                            ])
+                            if price_delta is not None and price_delta != 0:
+                                scols[(i, 4)] = P.positive if price_delta > 0 else P.negative
+                        C.table(["Code", "Month", "Price", "Implied %", "Δ price", ""],
+                                srows, numeric=(2, 3, 4), colours=scols)
+                        st.caption("Δ price is the contract's price move since the prior "
+                                   "close — green when up, red when down, default when "
+                                   "unchanged.")
+                    with sc2:
+                        st.markdown("### Cross-checks")
+                        flagged = [c for c in PATH.checks if c.flagged]
+                        if flagged:
+                            C.table(["Month", "Implied", "Carried", "Diff"],
+                                    [[c.month.strftime("%b %Y"), f"{c.implied:.3f}",
+                                      f"{c.expected:.3f}", f"{c.diff_bp:+.1f}bp"]
+                                     for c in flagged], numeric=(1, 2, 3))
+                            C.note("Months with no meeting should reprint the carried "
+                                   "rate. Where they do not, something outside the "
+                                   "calendar is in the price — a technical adjustment to "
+                                   "the remuneration rate, month-end funding, or a meeting "
+                                   "date the market disagrees with.")
+                        else:
+                            C.note("Every meeting-free month reprints the carried rate to "
+                                   f"within {stripmod.DRIFT_FLAG_BP:g}bp. The calendar and "
+                                   "the strip agree.")
+
+                # ------------------------------------------- 90 day bills
+                else:
+                    ir_live = [q for q in ir_quotes if q.ok]
+                    if not ir_live:
+                        st.warning("No bank bill quotes came back.")
+                        first = next((q for q in ir_quotes if q.error), None)
+                        if first:
+                            C.note(f"{first.symbol}: {first.error}")
+                    elif not BILLS.ok:
+                        st.warning(BILLS.error or "No bank bill curve available.")
+                    else:
+                        cv = BILLS
+                        b1, b2, b3 = st.columns(3)
+                        mb = cv.mean_basis_bp
+                        b1.metric("Mean basis",
+                                  f"{mb:+.1f}bp" if mb is not None else "--",
+                                  f"{len(cv.comparable_periods)} comparable windows",
+                                  delta_color="off",
+                                  help="The bill's implied BBSW less the interbank cash "
+                                       "path averaged over the same 90 days. BBSW is a "
+                                       "bank credit rate and the cash rate is not, so a "
+                                       "positive spread is normal; a wide one is funding "
+                                       "stress.")
+                        fr = cv.front
+                        b2.metric("Front window",
+                                  f"{fr.basis_bp:+.1f}bp" if fr and fr.comparable else "--",
+                                  fr.code if fr else "--", delta_color="off")
+                        b3.metric("IB covers to",
+                                  horizon.strftime("%b %Y") if horizon else "--",
+                                  "basis stops there", delta_color="off",
+                                  help="Interbank contracts go stale long before the bills "
+                                       "do. Past this date there is no path to compare "
+                                       "against, so the comparison is withheld rather than "
+                                       "extrapolated.")
+
+                        st.divider()
+                        pc1, pc2 = st.columns([1.45, 1], gap="large")
+                        with pc1:
+                            st.markdown("### What each contract spans")
+                            rows, colours = [], {}
+                            for i, per in enumerate(cv.periods):
+                                flag = " !" if per.stale else ""
+                                rows.append([
+                                    per.code + flag, per.window_label,
+                                    f"{(per.covers_end - per.covers_start).days}",
+                                    f"{len(per.meetings_covered)} ({per.covered_label})"
+                                    if per.meetings_covered else "0",
+                                    f"{per.implied:.3f}",
+                                    f"{per.expected:.3f}" if per.expected is not None
+                                    else "--",
+                                    f"{per.basis_bp:+.1f}" if per.comparable else "--",
+                                    f"{per.policy_bp:+.0f}" if per.policy_bp is not None
+                                    else "--",
+                                ])
+                                if per.comparable and per.basis_flagged:
+                                    colours[(i, 6)] = P.critical
+                                if per.policy_bp is not None:
+                                    colours[(i, 7)] = pnl_colour(per.policy_bp, P)
+                            C.table(["Contract", "Reference window", "Days", "Meetings",
+                                     "BBSW %", "IB path %", "Basis bp", "Policy bp"],
+                                    rows, numeric=(2, 3, 4, 5, 6, 7), colours=colours)
+                            C.note("Policy bp is how much the interbank path moves inside "
+                                   "that window — the policy risk the contract actually "
+                                   "carries. Basis is what is left once that path is "
+                                   "priced in. ! = quote not printing with the rest of "
+                                   "the strip.")
+                        with pc2:
+                            st.markdown("### Basis by window")
+                            comparable = [p_ for p_ in cv.comparable_periods
+                                          if not p_.stale]
+                            if comparable:
+                                st.altair_chart(charts.bbsw_basis(comparable, P),
+                                                width="stretch", theme=None)
+                            else:
+                                C.note("No window is covered by both strips, so there is "
+                                       "nothing to compare.")
+
+                        st.divider()
+                        d1, d2 = st.columns([1, 1], gap="large")
+                        with d1:
+                            st.markdown("### Calendar spreads")
+                            srows, scols = [], {}
+                            for i, spd in enumerate(cv.spreads):
+                                srows.append([
+                                    spd.label, f"{spd.market_bp:+.1f}",
+                                    f"{spd.path_bp:+.1f}" if spd.path_bp is not None
+                                    else "--",
+                                    f"{spd.diff_bp:+.1f}" if spd.diff_bp is not None
+                                    else "--",
+                                    f"{spd.meetings_between}",
+                                ])
+                                scols[(i, 1)] = pnl_colour(spd.market_bp, P)
+                                if spd.diff_bp is not None:
+                                    scols[(i, 3)] = pnl_colour(spd.diff_bp, P)
+                            C.table(["Spread", "Market", "IB path", "Diff", "Mtgs"],
+                                    srows, numeric=(1, 2, 3, 4), colours=scols)
+                            C.note("The spread is how a desk holds this view on bills "
+                                   "rather than outright. Diff is the market spread less "
+                                   "what the interbank path implies — the part that is "
+                                   "basis and convexity rather than policy, and the credit "
+                                   "spread is common to both legs and largely cancels.")
+                        with d2:
+                            st.markdown("### Where the algebra closes")
+                            # `determinate` is exactly the "one undecided meeting
+                            # before the fix" case, which is the only one the
+                            # probability is defined for -- but the step needs a
+                            # readable path at today's date as well, so both are
+                            # checked rather than inferred from each other.
+                            solved = [x for x in cv.periods
+                                      if x.determinate
+                                      and x.cash_equivalent_step_bp is not None
+                                      and x.cash_equivalent_prob is not None]
+                            if solved:
+                                C.table(
+                                    ["Contract", "Meeting", "Step", "P(move)"],
+                                    [[x.code, x.meetings_before[0].label,
+                                      f"{x.cash_equivalent_step_bp:+.1f}bp",
+                                      f"{x.cash_equivalent_prob:.0%}"] for x in solved],
+                                    numeric=(2, 3),
+                                )
+                                C.note("Only windows holding exactly one meeting are "
+                                       "determined, and these are read off the "
+                                       "cash-equivalent rate — today's observed BBSW/cash "
+                                       "spread stripped off the bill, which assumes that "
+                                       "spread holds to the fix. That assumption is stated "
+                                       "rather than hidden, and it is deliberately NOT the "
+                                       "basis column above, which would be circular and "
+                                       "would just hand back the interbank path.")
+                            else:
+                                C.note("No window in the quoted strip contains exactly one "
+                                       "meeting, so none determines a step on its own. Use "
+                                       "the interbank ladder for per-meeting pricing.")
+
+                            st.markdown("")
+                            C.note("An IR contract settles on a single 3-month BBSW fix, "
+                                   "not an average, so there is no month to un-blend and "
+                                   "no per-meeting probability to recover from the price "
+                                   "itself. Everything here is the fix compared against "
+                                   "the interbank path over the same 90 days.")
+
+                        if spot["spot_basis_bp"] is not None:
+                            C.note(
+                                f"Today's observed spread is {spot['spot_basis_bp']:+.1f}bp "
+                                f"— 3-month BBSW {spot['bbsw']:.3f}% less the "
+                                f"{spot['cash']:.3f}% target.")
+                        mb = cv.mean_basis_bp
+                        hist = rba.historical_bbsw_ois_basis()
+                        if mb is not None and hist:
+                            hist_mean = sum(o.value for o in hist) / len(hist)
+                            C.note(
+                                f"Mean basis {mb:+.1f}bp across comparable contracts. The "
+                                f"published BBSW/OIS spread averaged {hist_mean:.1f}bp over "
+                                "2011–2022 before the RBA retired the series, which is the "
+                                "only yardstick available for whether today's reading is "
+                                "wide or narrow.")
+
+                        C.note("Prices: ASX 30 day interbank cash rate futures (IB) and 90 "
+                               "day bank bill futures (IR), from the exchange's own "
+                               "end-of-day file. Delayed, and not a settlement source.")
 
     # -------------------------------------------- 3. Sensitivity & size
     elif section == "Sensitivity & size":
