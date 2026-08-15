@@ -506,6 +506,7 @@ with st.sidebar:
     options = sorted({m.key for m in MEETINGS} | set(saved_keys))
     default = next((k for k in options if k >= TODAY.isoformat()), options[-1])
     if "key" not in st.session_state:
+        # ?meeting=YYYY-MM-DD wins, so a meeting can be bookmarked or linked.
         wanted = st.query_params.get("meeting")
         st.session_state["key"] = (
             wanted if wanted in options else (default if default in options else options[0]))
@@ -526,6 +527,17 @@ with st.sidebar:
     if "state" not in st.session_state:
         st.session_state["state"] = store.load_or_seed(
             key, [rba_calendar.meeting_to_dict(m) for m in MEETINGS], TODAY)
+        # "As of" always opens on today, never on whatever a PAST session last
+        # saved -- a saved meeting is a live analysis you keep reopening, not a
+        # frozen snapshot, and every downstream number (blackout, days to
+        # meeting, the Monte Carlo window, vol lookback) should move forward
+        # with the calendar by default. Only overridden here, at the one moment
+        # state is freshly loaded and no widget has rendered yet for it -- from
+        # here on the "As of" widget below owns it for the rest of the session,
+        # so picking an explicit date (to review a meeting as it looked on a
+        # past day) sticks until the next fresh load.
+        st.session_state["state"]["as_of"] = TODAY.isoformat()
+        st.session_state["dirty"] = False
 
     S = st.session_state["state"]
     trade = S.setdefault("trade", {})
@@ -536,90 +548,199 @@ with st.sidebar:
         st.warning("The saved file for this meeting was unreadable and has been "
                    "replaced with a fresh one. Nothing was overwritten on disk "
                    "until you press Save.")
+    if S.get("cloned_from"):
+        st.caption(f"Started from {S['cloned_from']}. Market and path inputs cleared.")
+    elif key not in saved_keys:
+        st.caption("Unsaved. Roster seeded from the standing Board.")
+
+    as_of = st.date_input("As of",
+                          value=date.fromisoformat(S.get("as_of") or TODAY.isoformat()),
+                          on_change=mark_dirty)
+    S["as_of"] = as_of.isoformat()
 
     st.divider()
-    st.markdown("#### The trade")
+    st.markdown("#### Trade")
+    c1, c2 = st.columns(2)
+    with c1:
+        trade["direction"] = st.selectbox(
+            "Event", ["hike", "cut"],
+            index=0 if trade.get("direction", "hike") == "hike" else 1,
+            on_change=mark_dirty)
+    with c2:
+        sides = ["fade", "back"]
+        trade["side"] = st.selectbox(
+            "Side", sides, index=sides.index(trade.get("side", "fade")),
+            help="Fade = sell the event. Back = buy it.", on_change=mark_dirty)
+    c3, c4 = st.columns(2)
+    with c3:
+        # Left empty (None) rather than defaulted to 0 -- a blank meeting is
+        # "not priced yet", which is a different statement from "priced at zero".
+        trade["points"] = st.number_input(
+            "Points priced (to enter)",
+            value=float(trade["points"]) if trade.get("points") is not None else None,
+            step=0.5, format="%.2f", placeholder="not priced", on_change=mark_dirty)
+    with c4:
+        # min_value matters: implied probability is points/size, so a zero or
+        # negative size has no meaning and used to raise straight out of
+        # `model.build` into a red traceback.
+        trade["size"] = st.number_input(
+            "Move size (bp)", value=float(trade.get("size") or 25.0),
+            step=5.0, format="%.0f", min_value=1.0, on_change=mark_dirty)
 
-    trade["direction"] = st.radio(
-        "Direction", ["hike", "cut"],
-        index=0 if trade.get("direction", "hike") == "hike" else 1,
-        horizontal=True, on_change=mark_dirty)
-    trade["side"] = st.radio(
-        "Side", ["fade", "back"],
-        index=0 if trade.get("side", "fade") == "fade" else 1,
-        horizontal=True, on_change=mark_dirty,
-        help="Fade = sell the event. Back = buy it.")
+    st.divider()
+    st.markdown("#### Sizing")
+    # Short labels and paired rows: the sidebar is ~300px, and the full
+    # explanations belong in the tooltips rather than wrapping over three lines.
+    z1, z2 = st.columns(2)
+    with z1:
+        sizing_state["max_drawdown"] = st.number_input(
+            "Max DD (A$)",
+            value=float(sizing_state.get("max_drawdown")
+                        or sizingmod.DEFAULT_MAX_DRAWDOWN),
+            min_value=0.0, step=25_000.0, format="%.0f", on_change=mark_dirty,
+            help="The Kelly bankroll: the drawdown you can survive, not the daily "
+                 "limit. This sets the position; the daily limit only vetoes it.",
+        )
+    with z2:
+        sizing_state["daily_limit"] = st.number_input(
+            "Daily cap (A$)",
+            value=float(sizing_state.get("daily_limit")
+                        or sizingmod.DEFAULT_DAILY_LIMIT),
+            min_value=0.0, step=10_000.0, format="%.0f", on_change=mark_dirty,
+            help="A hard cap, not a sizing input. Rungs risking more than this are "
+                 "flagged as a breach rather than quietly shrunk to fit.",
+        )
 
-    pts = st.number_input(
-        "Points priced (bp)", value=float(trade.get("points") or 0.0),
-        step=0.5, format="%.2f", min_value=0.0, on_change=mark_dirty,
-        help="What the market charges for the event. NOT the probability.")
-    trade["points"] = pts if pts else None
-    # min_value matters: implied probability is points/size, so a zero or
-    # negative size has no meaning and used to raise straight out of
-    # `model.build` into a red traceback.
-    trade["size"] = st.number_input(
-        "Size of the move (bp)", value=float(trade.get("size") or 25.0),
-        step=5.0, format="%.0f", min_value=1.0, on_change=mark_dirty)
+    # The same contracts the Curve tab quotes, nearest delivery first, so the
+    # dropdown cannot offer an instrument the strip has no price for. Anchored
+    # on the as-of rather than the wall clock: which contract is the front
+    # month is a question about a DATE, and reviewing a past meeting should
+    # offer the strip that was live then, not the one live today.
+    universe = sizingmod.contract_universe(as_of) + [sizingmod.CUSTOM_CONTRACT]
+    by_key = {c.key: c for c in universe}
+    prior_contract = sizing_state.get("contract")
+    if prior_contract not in by_key:
+        # Legacy "ib"/"ir" family keys -- which is what a freshly seeded meeting
+        # carries -- or a month that has rolled off the strip: keep the family
+        # and roll to its nearest live contract. An unset or unrecognised key
+        # defaults to the front interbank contract, never to Custom: Custom
+        # means "I typed a DV01", not "nothing was saved".
+        kind = (sizingmod.contract_for(prior_contract, as_of).kind
+                if prior_contract else "ib")
+        if kind == "custom":
+            kind = "ib"
+        prior_contract = next(
+            (c.key for c in universe if c.kind == kind), universe[0].key)
+    contract_keys = list(by_key)
+    z3, z4 = st.columns([2, 1])
+    with z3:
+        sizing_state["contract"] = st.selectbox(
+            "Contract", contract_keys, index=contract_keys.index(prior_contract),
+            format_func=lambda k: by_key[k].label, on_change=mark_dirty,
+            help="The strip's own contracts, nearest delivery first. Sets the DV01 "
+                 "that turns dollar risk into a lot count: IB A$24.66/bp, and IR "
+                 "moves with the yield because a bank bill is discount-priced.",
+        )
+    with z4:
+        sizing_state["bets_per_year"] = st.number_input(
+            "Bets/yr", value=int(sizing_state.get("bets_per_year")
+                                 or sizingmod.DEFAULT_BETS_PER_YEAR),
+            min_value=1, max_value=60, step=1, on_change=mark_dirty,
+            help="Eight scheduled RBA meetings. Only annualises the per-bet growth.",
+        )
+    if sizing_state["contract"] == "custom":
+        sizing_state["custom_dv01"] = st.number_input(
+            "DV01 per lot (A$/bp)",
+            value=float(sizing_state.get("custom_dv01") or 24.66),
+            min_value=0.0, step=1.0, format="%.2f", on_change=mark_dirty)
+    # IR's DV01 moves with the yield level, so the caption reads the live one
+    # off the selected contract where there is one -- the same throwaway
+    # overlay the model is handed below, not written back into `S`.
+    _cap_yield = None
+    if sizing_state["contract"].startswith("ir:"):
+        _cap_month = sizing_state["contract"].partition(":")[2]
+        # `fetch_ir` is memoised, so reaching for the strip here costs nothing
+        # beyond the lookup the model section does again a few lines below.
+        _cap_q = next((q for q in fetch_ir()
+                       if q.ok and f"{q.month:%Y-%m}" == _cap_month), None)
+        _cap_yield = _cap_q.implied_rate if _cap_q is not None else None
+    dv01 = sizingmod.dv01_for(sizing_state["contract"],
+                              sizing_state.get("custom_dv01"), _cap_yield)
+    st.caption(f"**A${dv01:,.2f}** per bp per lot")
+
+    trade["kelly_fraction"] = st.select_slider(
+        "Kelly fraction", options=list(sizingmod.DEFAULT_FRACTIONS),
+        value=sizingmod.snap_fraction(trade.get("kelly_fraction")),
+        format_func=sizingmod.fraction_label, on_change=mark_dirty,
+        help="Drives the Verdict panel. Step 5 costs every rung out in lots and "
+             "dollars so this is a decision, not a default.",
+    )
 
     st.divider()
     st.markdown("#### Your probability")
     mode = st.radio(
         "Mode", ["decomposition", "manual"],
         index=0 if prob.get("mode", "decomposition") == "decomposition" else 1,
-        horizontal=True, on_change=mark_dirty, label_visibility="collapsed")
+        horizontal=True, on_change=mark_dirty,
+        help="Decomposition: q comes from the two sliders below, multiplied "
+             "together, and the number field is hidden. Manual: you type q "
+             "directly instead and the sliders are hidden.",
+    )
     prob["mode"] = mode
-    prob["p_bloc"] = st.slider(
-        "P(bloc votes for the move)", 0.0, 1.0,
-        float(prob.get("p_bloc") or 0.25), 0.05, on_change=mark_dirty)
-    prob["p_centre"] = st.slider(
-        "P(centre joins | bloc moves)", 0.0, 1.0,
-        float(prob.get("p_centre") or 0.40), 0.05, on_change=mark_dirty)
-    if mode == "manual":
-        prob["override_q"] = st.slider(
-            "q, entered directly", 0.0, 1.0,
-            float(prob.get("override_q") or 0.10), 0.01, on_change=mark_dirty)
+    # Exactly one input is ever shown: the sliders in decomposition mode, the
+    # number field in manual mode. Showing both invited the two to disagree
+    # silently; showing one makes it unambiguous which number is driving q.
+    if mode == "decomposition":
+        # Sliders work in whole percent -- a 0-1 float with a "%d%%" format
+        # renders 0.25 as "0%", which is exactly the kind of unit slip this
+        # app exists to avoid.
+        prob["p_bloc"] = st.slider(
+            "P(bloc votes for the move)", 0, 100,
+            int(round((prob.get("p_bloc") or 0.25) * 100)), 1, format="%d%%",
+            on_change=mark_dirty,
+            help="How likely the move candidates actually vote for the move -- not "
+                 "just write it into the statement's wording.",
+        ) / 100
+        prob["p_centre"] = st.slider(
+            "P(centre joins | bloc moves)", 0, 100,
+            int(round((prob.get("p_centre") or 0.40) * 100)), 1, format="%d%%",
+            on_change=mark_dirty,
+            help="Even if the move candidates DO vote yes, they do not have enough "
+                 "votes alone to carry it -- they need enough of the rest of the "
+                 "Board (the centre) to join them. This is how likely that happens, "
+                 "given the candidates already voted yes.",
+        ) / 100
+        derived = prob["p_bloc"] * prob["p_centre"]
+        st.caption(f"Decomposition: {prob['p_bloc']:.0%} × {prob['p_centre']:.0%} "
+                   f"= **{derived:.1%}**")
+        # Kept in sync silently rather than left to drift -- if you switch to
+        # manual afterwards, the field starts from where decomposition left off
+        # instead of some stale number from a previous session.
+        prob["override_q"] = derived
+    else:
+        derived = (prob.get("p_bloc") or 0.25) * (prob.get("p_centre") or 0.40)
+        prob["override_q"] = st.number_input(
+            "Recorded estimate q (%)",
+            value=float(round((prob.get("override_q")
+                               if prob.get("override_q") is not None
+                               else derived) * 100, 2)),
+            min_value=0.0, max_value=100.0, step=1.0, format="%.2f",
+            on_change=mark_dirty,
+            help="Your overall probability the move happens -- typed directly.",
+        ) / 100
 
     st.divider()
-    st.markdown("#### Sizing conventions")
-    sizing_state["max_drawdown"] = st.number_input(
-        "Max drawdown (A$) — the Kelly bankroll",
-        value=float(sizing_state.get("max_drawdown") or sizingmod.DEFAULT_MAX_DRAWDOWN),
-        step=25_000.0, format="%.0f", min_value=0.0, on_change=mark_dirty)
-    sizing_state["daily_limit"] = st.number_input(
-        "Daily loss limit (A$) — a veto, not a sizing input",
-        value=float(sizing_state.get("daily_limit") or sizingmod.DEFAULT_DAILY_LIMIT),
-        step=10_000.0, format="%.0f", min_value=0.0, on_change=mark_dirty)
-    trade["kelly_fraction"] = st.select_slider(
-        "Kelly fraction", options=[0.25, 1 / 3, 0.5, 1.0],
-        value=float(trade.get("kelly_fraction") or 0.25),
-        format_func=sizingmod.fraction_label, on_change=mark_dirty)
-
-    universe = sizingmod.contract_universe(TODAY)
-    ckeys = [c.key for c in universe] + ["custom"]
-    cur = sizing_state.get("contract") or "ib"
-    if cur not in ckeys:
-        ckeys.insert(0, cur)
-    # Legacy family keys ("ib", "ir") are what a freshly seeded meeting carries,
-    # so they need labels too or the dropdown shows a bare key.
-    labels = {k: c.label for k, c in sizingmod.LEGACY_CONTRACTS.items()}
-    labels.update({c.key: c.label for c in universe})
-    sizing_state["contract"] = st.selectbox(
-        "Sizing contract", ckeys, index=ckeys.index(cur),
-        format_func=lambda k: labels.get(k, k), on_change=mark_dirty)
-    if sizing_state["contract"] == "custom":
-        sizing_state["custom_dv01"] = st.number_input(
-            "DV01 per lot (A$)", value=float(sizing_state.get("custom_dv01") or 0.0),
-            step=1.0, min_value=0.0, on_change=mark_dirty)
-
-    st.divider()
-    if st.button("Save", width="stretch", type="primary"):
-        S["as_of"] = TODAY.isoformat()
+    dirty = st.session_state.get("dirty", False)
+    if st.button("Save meeting" + (" ●" if dirty else ""),
+                 type="primary" if dirty else "secondary", width="stretch"):
         store.save(key, S)
         st.session_state["dirty"] = False
-        st.success("Saved.")
-    if st.session_state.get("dirty"):
-        st.caption("Unsaved changes.")
+        st.success(f"Saved meetings/{key}.json")
+
+    if key in saved_keys and st.button("Reload from disk", width="stretch"):
+        st.session_state["state"] = store.load(key)
+        st.session_state["dirty"] = False
+        st.rerun()
 
 
 # ------------------------------------------------------------------ model
@@ -668,7 +789,7 @@ def rebuild():
     """
     global M
     M = model.build(
-        model_state, as_of=TODAY,
+        model_state, as_of=as_of,
         rba_values=kill_values, rba_units=kill_units,
         all_meetings=MEETINGS,
         rate_history=bbsw_history(),
@@ -697,17 +818,26 @@ M = rebuild()
 # silently broke in Streamlit 1.61: the input renders 0.0000 while the ladder
 # below is built off the real derived spot. Passing the derived number as
 # `value=` and letting the widget own its key works on both.
-strip_spot = stripmod.implied_spot(ib_quotes, MEETINGS, as_of=TODAY)
+strip_spot = stripmod.implied_spot(ib_quotes, MEETINGS, as_of=as_of)
 spot_derived = strip_spot if strip_spot is not None else spot["cash"]
 CURVE_SPOT_KEY = f"curve_spot_{S.get('meeting')}"
 anchor = st.session_state.get(CURVE_SPOT_KEY, spot_derived)
 PATH = (stripmod.decompose(MEETINGS, ib_quotes, float(anchor), M.size,
-                           stale_codes=ib_stale, as_of=TODAY)
+                           stale_codes=ib_stale, as_of=as_of)
         if anchor is not None else stripmod.StripPath(0.0, M.size, error="no cash rate anchor"))
 BILLS = bbswmod.analyse(ir_quotes, PATH, MEETINGS, M.size, ir_stale, horizon,
-                        as_of=TODAY, spot_basis_bp=spot["spot_basis_bp"])
+                        as_of=as_of, spot_basis_bp=spot["spot_basis_bp"])
 
-LEFT, RIGHT = st.columns([1, 0.34], gap="large")
+# Both the header and the verdict are painted at the very END of the script,
+# into placeholders reserved here. Every tab body edits state through widgets
+# that have not rendered yet at this point, so anything drawn now -- the
+# blackout chip, the kill count, the whole verdict -- would be one interaction
+# stale. Reserving the slot and filling it last is what `rebuild()` does for
+# the numbers, applied to layout.
+header_slot = st.empty()
+
+LEFT, RIGHT = st.columns([2.55, 1], gap="large")
+verdict_slot = RIGHT.container()
 
 
 # ------------------------------------------------------------------ working
@@ -716,18 +846,6 @@ SECTIONS = ["Pricing", "Curve", "Sensitivity & size", "Path & kills",
             "Labour", "Inflation", "Vote count", "Data"]
 
 with LEFT:
-    st.markdown(f"### {M.label} — RBA Monetary Policy Board")
-    chips: list[tuple[str, str | None]] = [
-        (f"{M.days_to_meeting}d to the decision" if M.days_to_meeting >= 0
-         else f"{-M.days_to_meeting}d since", None),
-        ("SMP meeting" if M.meeting.has_smp else "no SMP", P.accent if M.meeting.has_smp else None),
-    ]
-    if M.in_blackout:
-        chips.append(("blackout", P.negative))
-    if not M.meeting.verified:
-        chips.append(("date unverified", P.warning))
-    C.chips(chips)
-
     # A segmented control rather than st.tabs: Streamlit keeps every tab panel
     # in the DOM, so a Vega chart on an inactive tab mounts at zero width and
     # never recovers. Rendering only the active section fixes that.
@@ -951,7 +1069,7 @@ with LEFT:
         live = [q for q in ib_quotes if q.ok]
 
         if not live:
-            if M.meeting.end < TODAY:
+            if M.meeting.end < as_of:
                 st.info(f"{M.meeting.label} has already happened, and its contracts have "
                         "expired and stopped quoting. The Curve tab only speaks for "
                         "meetings still ahead — select a future one to price the strip.")
@@ -1055,7 +1173,7 @@ with LEFT:
                                 marks.append(i)
                             flag = " ~" if stp.ambiguous else (" !" if stp.stale else "")
                             rows.append([
-                                stp.label, f"{(stp.meeting.end - TODAY).days}d",
+                                stp.label, f"{(stp.meeting.end - as_of).days}d",
                                 stp.code + flag, f"{stp.step_bp:+.1f}",
                                 f"{stp.cum_bp:+.1f}", f"{stp.prob:.0%}",
                                 f"{stp.r_after:.3f}",
@@ -2652,7 +2770,7 @@ with LEFT:
 
         st.divider()
         C.section("Releases between now and the decision")
-        events = [e for e in M.calendar_events if TODAY <= e.when <= M.meeting.end]
+        events = [e for e in M.calendar_events if as_of <= e.when <= M.meeting.end]
         if events:
             C.table(["Date", "Event", "Tier", "Source"],
                     [[f"{e.when:%a %d %b}", e.label, e.weight, e.source] for e in events])
@@ -2662,64 +2780,244 @@ with LEFT:
 
 # ----------------------------------------------------------- verdict rail
 
+rebuild()
+
+with verdict_slot:
+    st.markdown('<div class="fomc-verdict">', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("#### Verdict on the numbers")
+
+        if not M.priced:
+            st.caption("Enter the points priced to produce a verdict.")
+        else:
+            s = M.summary
+            cond = M.conditional_ev_at
+            rung = (M.sizing_ladder.selected
+                    if M.sizing_ladder and M.sizing_ladder.ok else None)
+
+            def _sec(label: str) -> None:
+                st.markdown(f'<div class="fomc-verdict-sec">{label}</div>',
+                            unsafe_allow_html=True)
+
+            # --- The trade -------------------------------------------------
+            _sec("The trade")
+            leg = "Receive" if (M.side == "fade") == (M.direction == "hike") else "Pay"
+            _to_dec = (f"{M.days_to_meeting}d" if M.days_to_meeting > 0
+                       else ("today" if M.days_to_meeting == 0
+                             else f"decided {M.meeting.end:%d %b}"))
+            rows = [
+                C.verdict_row("Leg", f"{leg} — {M.side} {M.size:g}bp {M.direction}",
+                              P.accent, emph=True),
+                C.verdict_row("To the decision",
+                              _to_dec + (" · in blackout" if M.in_blackout else "")),
+            ]
+            # The reassess levels -- the TP/SL you actually chose, distinct
+            # from the market bounds the contract settles at.
+            _tp = next((x for x in M.exit_levels
+                        if x.role == "target" and not x.structural), None)
+            _sl = next((x for x in M.exit_levels
+                        if x.role == "stop" and not x.structural), None)
+            _pt = next((x for x in M.exit_levels if x.label == "Target -- partial"), None)
+            if _tp is not None:
+                rows.append(C.verdict_row(
+                    "Take profit (TP)",
+                    f"{_tp.level:g}bp · {_tp.implied:.0%} · {_tp.mtm:+.0f}bp",
+                    pnl_colour(_tp.mtm, P)))
+            if _pt is not None:
+                rows.append(C.verdict_row(
+                    "Partial TP",
+                    f"{M.stop.partial_share:.0%} off at {_pt.level:g}bp"
+                    f" · {_pt.mtm:+.0f}bp" if M.stop else
+                    f"at {_pt.level:g}bp · {_pt.mtm:+.0f}bp",
+                    pnl_colour(_pt.mtm, P)))
+            if _sl is not None:
+                rows.append(C.verdict_row(
+                    "Stop loss (SL)",
+                    f"{_sl.level:g}bp · {_sl.implied:.0%} · {_sl.mtm:+.0f}bp",
+                    pnl_colour(_sl.mtm, P)))
+            # The hard floor: a discipline line, not a simulation barrier.
+            _hf = next((x for x in M.exit_levels if x.label == "Stop -- hard floor"), None)
+            if _hf is not None:
+                rows.append(C.verdict_row(
+                    "Hard floor",
+                    f"{_hf.level:g}bp · {_hf.implied:.0%} · {_hf.mtm:+.0f}bp",
+                    pnl_colour(_hf.mtm, P)))
+            st.markdown("".join(rows), unsafe_allow_html=True)
+
+            # --- The view --------------------------------------------------
+            _sec("The view")
+            rows = [
+                C.verdict_row("Market-implied probability", f"{s.implied:.0%}"),
+                C.verdict_row("Your probability", f"{s.q:.1%}", P.accent),
+                C.verdict_row("Breakeven probability", f"{s.breakeven:.0%}"),
+                C.verdict_row("Margin of safety", f"{s.margin * 100:.1f}pp"),
+            ]
+            st.markdown("".join(rows), unsafe_allow_html=True)
+
+            # --- The edge --------------------------------------------------
+            _sec("The edge")
+            rows = [
+                C.verdict_row("Expected value", f"{s.ev:+.2f}bp",
+                              pnl_colour(s.ev, P), emph=True),
+                C.verdict_row("Max gain / max loss",
+                              f"{s.gain:+g} / {s.loss:+g}  (1 : {s.rr:.1f})"),
+                C.verdict_row("EV given the bloc already voted yes",
+                              (f"{cond:+.2f}bp"
+                               if cond is not None and M.decomposition.p_centre > 0
+                               else "--"),
+                              pnl_colour(cond or 0, P), emph=True),
+            ]
+            st.markdown("".join(rows), unsafe_allow_html=True)
+
+            # --- The size --------------------------------------------------
+            if rung:
+                _sec("The size")
+                _util = (f"{rung.max_loss / M.daily_limit:.0%} of "
+                         f"A${M.daily_limit:,.0f}" if M.daily_limit > 0
+                         else "no cap set")
+                rows = [
+                    C.verdict_row(
+                        "Sizing instrument",
+                        f"{M.contract_label}  (A${M.dv01:,.2f}/bp)"
+                        + (f"  ← A${M.quoted_dv01:,.2f} × {M.capture:.0%} capture"
+                           if M.capture < 1.0 - 1e-9 else ""),
+                        P.accent, emph=True),
+                    C.verdict_row(f"{rung.label} Kelly size",
+                                  f"{rung.contracts:,} lots  "
+                                  f"(A${rung.position_dv01:,.0f}/bp)",
+                                  P.accent, emph=True),
+                    C.verdict_row("Max gain / max loss (A$)",
+                                  f"+{rung.max_gain:,.0f} / -{rung.max_loss:,.0f}",
+                                  emph=True),
+                    C.verdict_row("Expected P&L (A$)", f"{rung.expected_pnl:+,.0f}",
+                                  pnl_colour(rung.expected_pnl, P)),
+                    C.verdict_row("Growth captured",
+                                  f"{rung.growth_share:.0%} of full  "
+                                  f"({rung.annualised:.0%} annualised)"),
+                    C.verdict_row("Daily limit",
+                                  f"{rung.status} · {_util}",
+                                  P.good if rung.within_daily_limit else P.critical,
+                                  emph=not rung.within_daily_limit),
+                ]
+                st.markdown("".join(rows), unsafe_allow_html=True)
+            else:
+                _sec("The size")
+                st.markdown(C.verdict_row(
+                    f"{sizingmod.fraction_label(M.kelly_fraction)} Kelly size",
+                    f"~{max(0.0, s.kelly_fractional):.0%} of risk budget"),
+                    unsafe_allow_html=True)
+
+            # --- What to watch ---------------------------------------------
+            _sec("What to watch")
+            a = M.arithmetic
+            # Short release names so a line never wraps: the full calendar name
+            # would be "Labour Force (employment, unemployment rate)".
+            _rel_short = {
+                econ_calendar.LABOUR: "Labour Force",
+                econ_calendar.CPI_Q: "CPI (quarterly)",
+                econ_calendar.CPI_M: "Monthly CPI",
+                econ_calendar.WPI: "WPI",
+                econ_calendar.GDP: "GDP",
+                econ_calendar.DECISION: "RBA decision",
+                econ_calendar.SMP: "Decision + SMP",
+                econ_calendar.MINUTES: "Minutes",
+            }
+            t1 = sorted((e for e in M.calendar_events
+                         if e.weight == 1 and as_of <= e.when <= M.meeting.end),
+                        key=lambda e: e.when)
+            t2 = sorted((e for e in M.calendar_events
+                         if e.weight == 2 and as_of <= e.when <= M.meeting.end),
+                        key=lambda e: e.when)
+            rows = [
+                C.verdict_row(
+                    "Vote count",
+                    ("Roster not set — Vote count tab"
+                     if a.total_voters == 0 else
+                     f"{a.mover_count}/{a.total_voters} movers · need {a.votes_needed}")),
+            ]
+            if a.blocs:
+                rows.append(C.verdict_row(
+                    "Blocs",
+                    " · ".join(f"{b.bloc} {b.count}" for b in a.blocs)))
+            rows += [
+                C.verdict_row(
+                    "P(bloc) × P(centre)",
+                    f"{M.decomposition.p_bloc:.0%} × {M.decomposition.p_centre:.0%} "
+                    f"= {M.decomposition.q:.1%}",
+                    P.accent, emph=True),
+            ]
+            # A manual q override that matches the decomposition adds nothing;
+            # show it only when it genuinely disagrees with the vote read.
+            _ov = M.decomposition.override_q
+            if _ov is not None and abs(_ov - M.decomposition.q) > 0.0005:
+                rows.append(C.verdict_row("Recorded q", f"{_ov:.1%}", P.accent, emph=True))
+            rows += [
+                C.verdict_row("Decision",
+                              f"{M.meeting.end:%d %b %a} · {M.direction} {M.size:g}bp"
+                              + (" · SMP" if M.meeting.has_smp else ""),
+                              P.accent, emph=True),
+                C.verdict_row(
+                    "Tier 1 events",
+                    ("Decision passed" if M.days_to_meeting < 0 else
+                     ("None before the decision" if not t1 else
+                      f"{len(t1)} before the decision — next {t1[0].when:%d %b}"))),
+            ]
+            if t1 and M.days_to_meeting >= 0:
+                _n = (t1[0].when - as_of).days
+                _name = _rel_short.get(t1[0].release, t1[0].release or t1[0].label)
+                rows.append(C.verdict_row(
+                    "Next release",
+                    f"{_name} in {_n}d" if _n > 0 else f"{_name} today"))
+            if t2 and M.days_to_meeting >= 0:
+                rows.append(C.verdict_row("Tier 2 events",
+                                          f"{len(t2)} · next {t2[0].when:%d %b}"))
+            rows.append(C.verdict_row(
+                "Pre-meeting information",
+                "None — blackout" if M.in_blackout else "Blackout not yet open",
+                emph=True))
+            st.markdown("".join(rows), unsafe_allow_html=True)
+            if t1:
+                for e in t1:
+                    st.markdown(
+                        f'<div class="fomc-verdict-row">'
+                        f'<span class="k">{e.when:%d %b %a} · '
+                        f'{_rel_short.get(e.release, e.release or e.label)}</span>'
+                        f'<span class="v"></span></div>',
+                        unsafe_allow_html=True)
+
+            if M.kill.is_stale:
+                st.error(f"{M.kill.count} kill criteria live — q is stale.")
+            for w in M.warnings:
+                st.warning(w)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
 with RIGHT:
-    st.markdown("#### Verdict")
-    if not M.priced:
-        st.caption("Enter the points priced to see the verdict.")
-    else:
-        s = M.summary
-        rows = [
-            C.verdict_row("Implied", f"{s.implied:.1%}"),
-            C.verdict_row("Your q", f"{s.q:.1%}", P.accent),
-            C.verdict_row("Breakeven", f"{s.breakeven:.1%}"),
-            C.verdict_row("Margin", f"{s.margin:+.1%}", pnl_colour(s.margin, P)),
-            C.verdict_row("EV", f"{s.ev:+.2f}bp", pnl_colour(s.ev, P), emph=True),
-            C.verdict_row("Risk/reward", f"{s.rr:.2f} : 1"),
-        ]
-        if M.sizing_ladder is not None and M.sizing_ladder.ok:
-            r = M.sizing_ladder.selected
-            rows.append(C.verdict_row("Size", f"{r.contracts:,.0f} lots"))
-            rows.append(C.verdict_row("At risk", f"A${r.max_loss:,.0f}",
-                                      None if r.within_daily_limit else P.negative))
-        st.markdown("".join(rows), unsafe_allow_html=True)
+    if M.priced:
+        md = report.render(M)
+        stamp = datetime.now().strftime("%Y%m%dT%H%M")
+        st.download_button("Export Markdown", md, file_name=f"{key}-{stamp}.md",
+                           mime="text/markdown", width="stretch")
+        if st.button("Save to runs/", width="stretch"):
+            out = store.save_run(key, md, stamp)
+            st.success(f"Wrote {out.relative_to(ROOT)}")
 
-        verdict = ("ON" if s.ev > 0 else "OFF")
-        st.markdown(
-            f"<div style='margin-top:.6rem;font-size:1.05rem;font-weight:700;"
-            f"color:{pnl_colour(s.ev, P)}'>Trade is {verdict}</div>",
-            unsafe_allow_html=True)
-        st.caption(
-            f"{'Fading' if M.side == 'fade' else 'Backing'} a {M.size:g}bp "
-            f"{M.direction} at {M.points:g}bp.")
 
-    # The market's own answer, next to yours.
-    step = PATH.step_for(M.meeting.key) if PATH.ok else None
-    if step is not None:
-        st.divider()
-        st.markdown("#### The strip says")
-        st.markdown("".join([
-            C.verdict_row("Priced step", f"{step.step_bp:+.1f}bp"),
-            C.verdict_row("Implied prob", f"{step.prob:.1%}"),
-            C.verdict_row("From", f"{step.code} ({'clean' if step.is_clean else 'inverted'})"),
-        ]), unsafe_allow_html=True)
-        if M.priced and abs(step.step_bp - M.points) > 1.0:
-            st.caption(
-                f"You have typed {M.points:g}bp; the strip prices {step.step_bp:+.1f}bp. "
-                "One of the two is out of date.")
-        if step.stale:
-            st.caption("Solved off a contract that is not trading — treat with care.")
+# ----------------------------------------------------------------- header
 
-    if M.warnings:
-        st.divider()
-        for w in M.warnings:
-            st.warning(w)
-
-    st.divider()
-    md = report.render(M)
-    st.download_button("Export Markdown", md,
-                       file_name=f"rba-{M.meeting.key}.md",
-                       mime="text/markdown", width="stretch")
-    if st.button("Save to runs/", width="stretch",
-                 help="Keeps a timestamped copy of this report alongside the repo."):
-        out = store.save_run(key, md, datetime.now().strftime("%Y%m%d-%H%M%S"))
-        st.success(f"Written to {out.relative_to(ROOT)}")
+opens, closes = M.blackout
+head = [
+    (f"{M.label} RBA", None),
+    (M.meeting.label, None),
+    (f"{M.days_to_meeting}d to decision" if M.days_to_meeting >= 0 else "decided", None),
+]
+if not M.meeting.verified:
+    head.append(("date unverified", P.warning))
+head.append((f"blackout {opens:%d %b}-{closes:%d %b}"
+             + (" · live" if M.in_blackout else ""),
+             P.serious if M.in_blackout else None))
+head.append(("SMP meeting" if M.meeting.has_smp else "no SMP", None))
+if M.kill.is_stale:
+    head.append((f"{M.kill.count} kill criteria live", P.critical))
+with header_slot:
+    C.chips(head)
