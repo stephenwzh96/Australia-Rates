@@ -377,6 +377,65 @@ HISTORY_WINDOWS = ("1Y", "2Y", "3Y", "5Y", "10Y", "All")
 # version of this panel compares against the prior year end.
 COMPARE_WINDOWS = ("3M", "6M", "1Y", "2Y", "Prior year end")
 
+# Release families, so the economic calendar groups its rows by what kind of
+# news they are rather than listing them flat. Keyed on `Event.label`, which is
+# what the calendar table prints; the manual rows a user types on the Data tab
+# are free text with no fixed vocabulary and so get no family -- the "confirmed"
+# tag in the Source column already marks them out. Same four-colour language as
+# the FOMC version, with the Fed's slot given over to the RBA's own calendar.
+CALENDAR_FAMILY = {
+    "Labour Force (employment, unemployment rate)": "labour",
+    "Wage Price Index": "labour",
+    "CPI, quarterly (headline and trimmed mean)": "inflation",
+    "Monthly CPI indicator": "inflation",
+    "National Accounts (GDP)": "activity",
+}
+CALENDAR_FAMILY_TINT = {
+    "labour": "rgba(59,130,246,0.11)",
+    "inflation": "rgba(217,119,6,0.12)",
+    "activity": "rgba(13,148,136,0.11)",
+    "rba": "rgba(139,92,246,0.12)",
+}
+CALENDAR_FAMILY_TINT_SOLID = {
+    "labour": "#3b82f6", "inflation": "#d97706",
+    "activity": "#0d9488", "rba": "#8b5cf6",
+}
+CALENDAR_FAMILY_NAME = {
+    "labour": "Labour market", "inflation": "Inflation",
+    "activity": "Activity", "rba": "RBA calendar",
+}
+
+# RELEASE (the report) -> family, so the Monte Carlo path markers reuse the four
+# colours the calendar table already established rather than inventing a second
+# colour language for the same events. Keyed on `Event.release`, which is what
+# the volatility multipliers and the chart both group by.
+RELEASE_FAMILY = {
+    econ_calendar.LABOUR: "labour",
+    econ_calendar.WPI: "labour",
+    econ_calendar.CPI_Q: "inflation",
+    econ_calendar.CPI_M: "inflation",
+    econ_calendar.GDP: "activity",
+    econ_calendar.DECISION: "rba",
+    econ_calendar.SMP: "rba",
+    econ_calendar.MINUTES: "rba",
+}
+RELEASE_FAMILY_COLOUR = {name: CALENDAR_FAMILY_TINT_SOLID[fam]
+                         for name, fam in RELEASE_FAMILY.items()}
+
+
+def _calendar_family(label: str) -> str | None:
+    """The family a calendar row belongs to, or None for a manual entry.
+
+    RBA decision rows carry the Statement suffix when the meeting has one, so
+    they are matched by prefix rather than looked up whole.
+    """
+    fam = CALENDAR_FAMILY.get(label)
+    if fam:
+        return fam
+    if label.startswith("RBA decision") or label.startswith("RBA minutes"):
+        return "rba"
+    return None
+
 
 def _history_window_start(choice: str) -> date | None:
     """Map a history-window selector choice to a cutoff date (None = all)."""
@@ -695,30 +754,148 @@ with LEFT:
                     f"{M.points:g} / {M.size:g} = {s.breakeven:.1%}", "be")
 
             st.divider()
-            C.section("The two outcomes", "The payoff is capped on both sides.")
-            C.table(["Outcome", "Settles at", "P&L"],
-                    [[o.label, f"{o.settles_at:g}bp", f"{o.pnl:+.2f}bp"] for o in M.outcomes])
-            st.caption(f"Risk/reward {s.rr:.2f} to 1 — {abs(s.loss):.2f}bp at risk "
-                       f"for {s.gain:.2f}bp of gain.")
+            l1, l2 = st.columns([1, 1], gap="large")
 
-            st.altair_chart(charts.ev_curve(M.points, M.size, s.q, M.side, P),
-                            use_container_width=True)
+            with l1:
+                C.section("Step 2 — the two terminal outcomes")
+                C.table(
+                    ["Outcome", "Settles at", "Your P&L"],
+                    [[o.label, f"{o.settles_at:g}bp", f"{o.pnl:+g}bp"] for o in M.outcomes],
+                    numeric=(1, 2),
+                    colours={(i, 2): pnl_colour(o.pnl, P) for i, o in enumerate(M.outcomes)},
+                )
+                C.note(f"Max loss is capped at {abs(s.loss):g}bp because the RBA cannot move "
+                       f"more than {M.size:g}bp at this meeting. An uncapped tail would change "
+                       "the answer.")
+
+            with l2:
+                C.section("Step 3 — the arithmetic check")
+                agree = pricing.ev_routes_agree(M.points, M.size, s.q, M.side)
+                C.table(
+                    ["Route", "Working", "Result"],
+                    [
+                        ["EV", f"{M.points:g} − {M.size:g}({s.q:.4g})", f"{s.ev:+.2f}bp"],
+                        ["Edge", f"({s.implied:.0%} − {s.q:.0%}) × {M.size:g}",
+                         f"{s.ev_via_edge:+.2f}bp"],
+                    ],
+                    numeric=(2,),
+                )
+                if agree:
+                    st.markdown(
+                        f'<div class="fomc-note" style="color:{P.good}">'
+                        '✓ Two routes, same answer.</div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.error("The two routes disagree — check the inputs.")
 
             st.divider()
-            C.section("Which contract expresses this",
-                      "Capture is a DV01 scaler, not a footnote.")
-            C.table(
-                ["Contract", "Month", "Days at new rate", "Capture", "Captured"],
-                [[c.code, c.month_label, f"{c.days_at_new_rate}/{c.days_in_month}",
-                  f"{c.share:.1%}", f"{c.captured_bp:.2f}bp"] for c in M.captures])
-            if M.near_trap:
-                near = next(c for c in M.captures if c.is_near)
-                st.warning(
-                    f"{near.code} captures only {near.share:.1%} of a {M.meeting.label} move. "
-                    "The decision lands too late in the month for the meeting-month contract "
-                    "to express the view — use the following month.")
-            C.table(["Instrument", "Verdict", "Why"],
-                    [[i.name, i.verdict, i.caveat] for i in contracts.INSTRUMENT_RANKING])
+            m1, m2, m3 = st.columns(3)
+            m1.metric(
+                "Margin of safety", f"{s.margin * 100:.1f}pp",
+                help="Breakeven minus your q -- how far your estimate can be wrong before "
+                     "the trade stops being profitable in expectation.",
+            )
+            m2.metric(
+                "Max gain / max loss", f"{s.gain:+g} / {s.loss:+g}",
+                help="The two possible outcomes' P&L. Capped both ways because the size of "
+                     "the move itself is capped.",
+            )
+            m3.metric(
+                "Payoff ratio", f"1 : {s.rr:.1f}",
+                help="How much you risk to make how much. On its own this says nothing about "
+                     "whether the trade is good -- that depends on how often you actually win.",
+            )
+
+        st.divider()
+        ehdr, ehlp = st.columns([1, 0.06], vertical_alignment="center")
+        with ehdr:
+            window_start = M.as_of - timedelta(days=econ_calendar.LOOKBACK_DAYS)
+            C.section(
+                f"Around {M.meeting.label}",
+                f"{window_start:%d %b} → {M.meeting.end:%d %b %Y} — the past "
+                f"four months' context, plus {M.days_to_meeting}d to the decision."
+                if M.days_to_meeting >= 0 else
+                "This meeting has already happened.")
+        with ehlp:
+            C.formula_help(
+                r"\text{shown} = \{\, \text{Labour Force, CPI, WPI, GDP, RBA} \,\}",
+                "Releases shown here come from a fixed, institution-stated rule -- "
+                "Thursday of the third week (ABS Labour Force), the last Wednesday "
+                "of the month (CPI: the quarterly print in Jan/Apr/Jul/Oct, the "
+                "monthly indicator otherwise), the third Wednesday of the middle "
+                "month of a quarter (Wage Price Index), the first Wednesday of "
+                "Mar/Jun/Sep/Dec (National Accounts), the decision dates themselves "
+                "and a fortnight after each for the minutes. Retail sales, building "
+                "approvals and the rest do not fall on either kind of fixed date, so "
+                "they are never guessed here -- add them by hand on the Data tab and "
+                "they arrive marked \"confirmed\".",
+                f"window: {window_start.isoformat()} to {M.meeting.end.isoformat()}",
+                "econcal")
+
+        if M.days_to_meeting < 0:
+            pass
+        elif not M.calendar_events:
+            st.info("No rule-based release falls in this window.")
+        else:
+            headers = ["Date", "Out", "Release", "Tier", "Source"]
+
+            def _rows(events, muted):
+                rows, colours, marks, bg = [], {}, [], {}
+                for i, e in enumerate(events):
+                    out = (e.when - M.as_of).days
+                    if e.when == M.meeting.end:
+                        marks.append(i)
+                    rows.append([
+                        e.when.strftime("%a %d %b"), f"{out}d", e.label, e.weight,
+                        "confirmed" if e.source == "manual" else "rule",
+                    ])
+                    family = _calendar_family(e.label)
+                    if family:
+                        bg[i] = CALENDAR_FAMILY_TINT[family]
+                    if muted:
+                        for col in range(len(headers)):
+                            colours[(i, col)] = P.muted
+                    else:
+                        colours[(i, 3)] = {1: P.critical, 2: P.serious}.get(e.weight, P.muted)
+                return rows, colours, marks, bg
+
+            past = [e for e in M.calendar_events if e.when < M.as_of]
+            future = [e for e in M.calendar_events if e.when >= M.as_of]
+
+            if past:
+                st.markdown('<div class="fomc-note" style="opacity:0.7;'
+                            'text-transform:uppercase;letter-spacing:.04em;'
+                            'font-size:0.68rem;margin-bottom:0.2rem">'
+                            'Past four months — realised</div>', unsafe_allow_html=True)
+                rows, colours, marks, bg = _rows(past, muted=True)
+                C.table(headers, rows, numeric=(1, 3), mark_rows=marks,
+                        colours=colours, row_bg=bg)
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:0.6rem;'
+                    f'margin:0.5rem 0;opacity:0.55;font-size:0.7rem;">'
+                    f'<div style="flex:1;height:1px;background:currentColor"></div>'
+                    f'<div>AS OF · {M.as_of:%a %d %b %Y}</div>'
+                    f'<div style="flex:1;height:1px;background:currentColor"></div>'
+                    f'</div>', unsafe_allow_html=True)
+
+            if future:
+                if past:
+                    st.markdown('<div class="fomc-note" style="opacity:0.7;'
+                                'text-transform:uppercase;letter-spacing:.04em;'
+                                'font-size:0.68rem;margin-bottom:0.2rem">'
+                                'Before the meeting</div>', unsafe_allow_html=True)
+                rows, colours, marks, bg = _rows(future, muted=False)
+                C.table(headers, rows, numeric=(1, 3), mark_rows=marks,
+                        colours=colours, row_bg=bg)
+            elif past:
+                C.note("Nothing left on the rule-based calendar before the meeting.")
+
+            C.legend([(CALENDAR_FAMILY_NAME[f], CALENDAR_FAMILY_TINT_SOLID[f])
+                      for f in ("labour", "inflation", "activity", "rba")])
+            C.note("Tier 1 = market-moving, 2 = notable. \"rule\" is generated from a fixed "
+                   "release convention, not read off a calendar page; public holidays that "
+                   "shift an ABS release are not accounted for. \"confirmed\" marks a "
+                   "manually-added calendar entry for this meeting.")
 
     # ------------------------------------------------------------ 2. Curve
     elif section == "Curve":
