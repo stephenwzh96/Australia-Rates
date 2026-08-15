@@ -8,6 +8,12 @@ runs/
 .pytest_cache/
 .DS_Store
 
-# A pasted licensed series (NAB capacity utilisation) is the user's data and
-# their licensor's -- it stays on the machine that pasted it.
-meetings/_manual_series.json
+# A licensed series (NAB capacity utilisation) is the user's data and their
+# licensor's -- it stays on the machine that holds it. The glob covers the
+# backups the series has picked up: they carry the same 319 rows as the file
+# itself, so naming only the original would leave the data one `git add -A`
+# away from being published.
+meetings/_manual_series*.json
+
+# Local agent scratch, not project content.
+.workbuddy-ai/
