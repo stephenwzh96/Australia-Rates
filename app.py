@@ -1255,20 +1255,28 @@ with LEFT:
         hist_start = _history_window_start(hist)
         st.caption("Show recent history — capacity and flow charts")
 
+        # Last true data period for each series, carried into both legends so
+        # the reader sees how fresh each line is.
+        _monyy = lambda d: d.strftime("%b '%y")
+
         lr1, lr2 = st.columns(2, gap="medium")
         with lr1:
             capacity = manual_series(NAB_CAPACITY)
             capacity_ma = (trailing_mean(capacity, CAPACITY_MA_WINDOW)
                           if capacity else None)
+            unemployment = data.get("unemployment", [])
             st.altair_chart(
                 charts.capacity_vs_unemployment(
-                    capacity, data.get("unemployment", []), P, hist_start,
+                    capacity, unemployment, P, hist_start,
                     charts.Vintage(last_modified=data_asof(data)),
                     capacity_ma=capacity_ma),
                 width="stretch", theme=None)
-            C.legend(([("NAB capacity utilisation, inverted, lhs", charts.MA_BLUE)]
+            C.legend(([(f"NAB capacity utilisation, inverted, lhs "
+                        f"(to {_monyy(capacity[-1][0])})", charts.MA_BLUE)]
                       if capacity else [])
-                     + [("Unemployment rate, rhs", P.categorical[7])])
+                     + [(f"Unemployment rate, rhs"
+                         + (f" (to {_monyy(unemployment[-1][0])})"
+                            if unemployment else ""), P.categorical[7])])
             if not capacity:
                 C.note(
                     "No capacity utilisation series is loaded. NAB's is "
@@ -1288,9 +1296,7 @@ with LEFT:
 
         with lr2:
             flows = flow_series()
-            # Last true data period for each series (before the visual 1q lead),
-            # carried into the legend so the reader sees how fresh each line is.
-            _monyy = lambda d: d.strftime("%b '%y")
+            # Last true data period for each series (before the visual 1q lead).
             f_lbl = f"Job-finding (fwd 1q, to {_monyy(flows['finding'][-1][0])})"
             s_lbl = f"Job-switching (fwd 1q, to {_monyy(flows['switching'][-1][0])})"
             w_lbl = f"Quarterly WPI growth (to {_monyy(flows['wages'][-1][0])})"
