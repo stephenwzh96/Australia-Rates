@@ -33,6 +33,12 @@ LINE_WIDTH = 2
 POINT_SIZE = 70
 BAR_RADIUS = 4
 
+# Navy line on the capacity-vs-unemployment chart: a moving average of the raw
+# (grey) capacity prints, matching the labelled line on the bench chart
+# (bench.jpg). Chosen to read clearly on both light and dark surfaces and to
+# stay distinct from the grey raw-print line.
+MA_BLUE = "#1f4e8c"
+
 
 # ---------------------------------------------------------------------------
 # Source vintage line
@@ -989,7 +995,9 @@ def _time_axis(df: pd.DataFrame, cols: str = "when") -> alt.Axis:
 
 def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
            y_format: str = ".1f", zero_rule: bool = False,
-           y_domain: tuple[float, float] | None = None) -> list[alt.Chart]:
+           y_domain: tuple[float, float] | None = None,
+           colors: dict[str, str] | None = None,
+           dashes: dict[str, list[int]] | None = None) -> list[alt.Chart]:
     """A multi-series line chart's layers: optional zero rule, then the lines.
 
     No Vega legend on any of them. Every caller renders the key underneath with
@@ -999,7 +1007,19 @@ def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
     colour alone: the key is always present and the hover readout names the
     series.
     """
-    scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
+    if colors:
+        # Caller-supplied per-series colours (e.g. the labour-flows panel),
+        # falling back to the categorical cycle for any name not mapped.
+        range_ = [colors.get(name, p.categorical[i % len(p.categorical)])
+                  for i, name in enumerate(order)]
+        scale = alt.Scale(domain=order, range=range_)
+    else:
+        scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
+    # Per-series stroke dash (solid [1, 0] unless a caller overrides). Used by
+    # the labour-flows panel to render the flow measures dotted against the
+    # solid WPI line.
+    dash_range = [(dashes or {}).get(name, [1, 0]) for name in order]
+    dash = alt.StrokeDash("series:N", scale=alt.Scale(domain=order, range=dash_range))
     ys = alt.Scale(zero=False) if y_domain is None else alt.Scale(domain=list(y_domain))
     layers: list[alt.Chart] = []
     if zero_rule:
@@ -1011,6 +1031,7 @@ def _lines(df: pd.DataFrame, order: list[str], p: Palette, y_title: str,
             x=alt.X("when:T", axis=_time_axis(df)),
             y=alt.Y("value:Q", scale=ys, axis=alt.Axis(title=y_title, format=y_format)),
             color=alt.Color("series:N", scale=scale, sort=order, legend=None),
+            strokeDash=dash,
             tooltip=[alt.Tooltip("series:N", title=""),
                      alt.Tooltip("when:T", title="quarter", format="%b %Y"),
                      alt.Tooltip("value:Q", title="per cent", format=".2f")]))
@@ -1193,52 +1214,118 @@ def cpi_cycle(split, p: Palette, start: date | None = None,
 def capacity_vs_unemployment(capacity, unemployment, p: Palette,
                              start: date | None = None,
                              vintage: "Vintage | None" = None,
-                             height: int = 300) -> alt.LayerChart:
+                             height: int = 300,
+                             capacity_ma=None) -> alt.LayerChart:
     """Capacity utilisation against the unemployment rate, utilisation inverted.
 
-    Two y-scales, which this app otherwise refuses -- the Inflation tab's
-    breadth chart is drawn as stacked panels for exactly that reason. The
-    difference is what the reader is being asked to do. There the question was
-    whether one series leads another, and independent scales manufacture
-    crossings that answer it falsely. Here the two ARE the same quantity read
-    two ways: firms running out of spare capacity and workers finding jobs, in
-    percent, on levels a century apart. Inverting utilisation is what makes
-    them comparable at all, and pinning it to a second axis is how the source
-    does it. The FOMC version ships the same construction for layoffs against
-    quits.
+    Drawn to match the CIO Analytics bench chart (bench.jpg) exactly:
 
-    The honest caveat rides on the chart rather than here: the axes are pinned
-    by the data's own range, so the vertical gap between the lines carries no
-    meaning. Only their shapes do.
+    * grey line   -- raw NAB monthly capacity prints (thin, de-emphasised)
+    * navy line   -- 3-month trailing moving average of those prints (the
+                     bench's labelled "NAB Capacity Utilization Rate, inverted")
+    * red line    -- ABS unemployment rate, seasonally adjusted, untransformed
+                     (verified against the bench: it plots the raw print)
+    * left axis   -- fixed 70.0-87.5, inverted, 2.5pt ticks, "Percent"
+    * right axis  -- fixed 3-9, 1pt ticks, "Percent"; the gridlines ride on
+                     this axis, as they do on the bench
+    * x starts at the capacity series' first month (Jan 2000 on the bench),
+                     so unemployment is clipped to the same window
+
+    Both axes extend past the bench range only if the data ever breaches it,
+    so a record print is never clipped. Two y-scales is something this app
+    otherwise refuses -- the Inflation tab's breadth chart is drawn as
+    stacked panels for exactly that reason -- but here the two ARE the same
+    quantity read two ways: firms running out of spare capacity and workers
+    finding jobs, in percent, on levels a century apart. Inverting
+    utilisation is what makes them comparable at all, and pinning it to a
+    second axis is how the source does it.
     """
     cdf = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
                                for d, v in capacity]) if capacity
                  else _EMPTY.copy()[["when", "value"]], start)
-    udf = _since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+    udf = _since(pd.DataFrame([{"when": pd.Timestamp(d), "urate": float(v)}
                                for d, v in unemployment]) if unemployment
-                 else _EMPTY.copy()[["when", "value"]], start)
-    axis = _time_axis(udf if cdf.empty else cdf)
+                 else pd.DataFrame({"when": pd.to_datetime([]),
+                                    "urate": []}), start)
+    if not cdf.empty and not udf.empty:
+        # The bench starts both lines at the capacity series' first month;
+        # the ABS unemployment feed reaches back to 1978, so clip it.
+        udf = udf[udf["when"] >= cdf["when"].min()]
 
-    cap = alt.Chart(cdf).mark_line(strokeWidth=LINE_WIDTH,
-                                   color=p.categorical[6]).encode(
+    # Bench-pinned axes that only budge when a print falls outside them.
+    # Ranges come from the data actually plotted (post history-window filter).
+    mdf = (_since(pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                                for d, v in capacity_ma]), start)
+           if capacity_ma else None)
+    left_vals = list(cdf["value"]) + (list(mdf["value"]) if mdf is not None else [])
+    lo = math.floor(min([70.0] + left_vals) / 2.5) * 2.5
+    hi = math.ceil(max([87.5] + left_vals) / 2.5) * 2.5
+    left_ticks = [round(lo + 2.5 * i, 2) for i in range(int(round((hi - lo) / 2.5)) + 1)]
+    right_vals = list(udf["urate"])
+    rlo = math.floor(min([3.0] + right_vals))
+    rhi = math.ceil(max([9.0] + right_vals))
+    right_ticks = list(range(rlo, rhi + 1))
+
+    # X axis: at full history the bench ticks every two years, 2000...2026.
+    axis = _time_axis(udf if cdf.empty else cdf)
+    src_df = udf if cdf.empty else cdf
+    if not src_df.empty and (src_df["when"].max() - src_df["when"].min()).days > 8 * 366:
+        first = src_df["when"].min().year
+        first += first % 2
+        last = src_df["when"].max().year + 1
+        axis = alt.Axis(title=None, format="%Y", labelAngle=0, grid=False,
+                        values=[pd.Timestamp(y, 1, 1).isoformat()
+                                for y in range(first, last + 1, 2)])
+    else:
+        axis.grid = False
+
+    left_scale = alt.Scale(domain=[lo, hi], reverse=True, zero=False, nice=False)
+    left_axis = alt.Axis(title="Percent", values=left_ticks, format=".1f",
+                         grid=False, titleAngle=0, titleAlign="left",
+                         titleBaseline="bottom", titleY=-12)
+    right_axis = alt.Axis(title="Percent", values=right_ticks, format="d",
+                          orient="right", grid=True, titleAngle=0,
+                          titleAlign="right", titleBaseline="bottom", titleY=-12)
+
+    cap = alt.Chart(cdf).mark_line(strokeWidth=1.5,
+                                   color=p.muted).encode(
         x=alt.X("when:T", axis=axis),
-        y=alt.Y("value:Q",
-                scale=alt.Scale(zero=False, nice=True, reverse=True),
-                axis=alt.Axis(title="capacity utilisation, % (inverted)")),
+        y=alt.Y("value:Q", scale=left_scale, axis=left_axis),
         tooltip=[alt.Tooltip("when:T", title="month", format="%b %Y"),
                  alt.Tooltip("value:Q", title="capacity utilisation, %",
                              format=".1f")])
+
+    # The bench's labelled navy line: a moving average of the raw (grey)
+    # prints, computed in-app so it extends as each monthly print lands.
+    # Axis-less: its scale is identical to the raw line's, and a second
+    # axis object would overplot the left axis under resolve "independent".
+    if mdf is not None:
+        ma = alt.Chart(mdf).mark_line(strokeWidth=2.5,
+                                      color=MA_BLUE, opacity=0.9).encode(
+            x=alt.X("when:T", axis=axis),
+            y=alt.Y("value:Q", scale=left_scale,
+                    axis=None if not cdf.empty else left_axis),
+            tooltip=[alt.Tooltip("when:T", title="month (MA)", format="%b %Y"),
+                     alt.Tooltip("value:Q", title="capacity MA, %",
+                                 format=".1f")])
+
+    # A field name of its own ("urate") so the independent scale resolution
+    # leaves the two capacity layers sharing one left axis.
     une = alt.Chart(udf).mark_line(strokeWidth=LINE_WIDTH,
                                    color=p.categorical[7]).encode(
         x=alt.X("when:T", axis=axis),
-        y=alt.Y("value:Q", scale=alt.Scale(zero=False, nice=True),
-                axis=alt.Axis(title="unemployment rate, %", orient="right",
-                              gridColor="transparent")),
+        y=alt.Y("urate:Q",
+                scale=alt.Scale(domain=[rlo, rhi], zero=False, nice=False),
+                axis=right_axis),
         tooltip=[alt.Tooltip("when:T", title="month", format="%b %Y"),
-                 alt.Tooltip("value:Q", title="unemployment rate, %",
+                 alt.Tooltip("urate:Q", title="unemployment rate, %",
                              format=".1f")])
 
     layers = [cap, une] if not cdf.empty else [une]
+    if mdf is not None and not cdf.empty:
+        layers = [cap, ma, une]
+    elif mdf is not None:
+        layers = [ma, une]
     chart = alt.layer(*layers)
     if not cdf.empty:
         chart = chart.resolve_scale(y="independent")
@@ -1249,7 +1336,9 @@ def capacity_vs_unemployment(capacity, unemployment, p: Palette,
 def labour_flows(series: dict[str, list[tuple[date, float]]], order: list[str],
                  p: Palette, start: date | None = None,
                  vintage: "Vintage | None" = None,
-                 height: int = 300) -> alt.LayerChart:
+                 height: int = 300,
+                 colors: dict[str, str] | None = None,
+                 dashes: dict[str, list[int]] | None = None) -> alt.LayerChart:
     """Job-finding, job-switching and wage growth, each as its own z-score.
 
     Z-scores because the three are in incompatible units -- a transition rate,
@@ -1257,11 +1346,18 @@ def labour_flows(series: dict[str, list[tuple[date, float]]], order: list[str],
     them is where each sits against its own history, not how they compare in
     level. It is the same arithmetic the indicator panel above scores a single
     reading with, run across the whole series so it can be plotted.
+
+    `colors`, when given, fixes each line's colour by series name (the flows
+    panel uses it to keep WPI dark blue, job-finding grey, job-switching light
+    blue) rather than letting them cycle the categorical palette. `dashes`
+    does the same for line style -- the flows panel dots the two flow measures
+    against the solid WPI line.
     """
     df = _since(_tidy(series, order), start)
     return _apply(
         alt.layer(*_lines(df, order, p, "z-score vs the series' own history",
-                          y_format=".1f", zero_rule=True))
+                          y_format=".1f", zero_rule=True, colors=colors,
+                          dashes=dashes))
         .properties(title=vintage_title(
             "Job-finding and job-switching against wage growth", vintage, p)),
         p, height)

@@ -50,12 +50,23 @@ TODAY = date.today()
 # user can edit rather than as constants in the code.
 CLASSIFICATION_PATH = ROOT / "meetings" / "_cpi_classification.json"
 
-# Series with no public feed, pasted in from a terminal that licences them.
+# Series with no public feed, held here as a manual series (the NAB capacity
+# utilisation print, digitised off the bench; others could join the same file).
 # Beside the classification rather than inside a meeting's saved state: this is
 # reference data, not a per-meeting judgement, and one paste should serve every
 # meeting rather than being cloned forward with each one.
 MANUAL_SERIES_PATH = ROOT / "meetings" / "_manual_series.json"
 NAB_CAPACITY = "NAB capacity utilisation"
+
+# The navy line on the bench's capacity-vs-unemployment chart (bench.jpg) is a
+# moving average of the grey raw-print line. Digitising the bench and fitting
+# the COVID trough pins it down: the navy low is 74.1-74.2 in Jun 2020, exactly
+# the trailing 3-month mean of the official prints (Mar 75.1, Apr 72.0, May
+# rebound) — a 2-month mean would trough lower (73.3), anything longer lags.
+# NAB's own convention is a 3-month trailing average, and a trailing (causal)
+# average extends automatically as each new monthly print lands, so it is
+# derived in-app, not stored.
+CAPACITY_MA_WINDOW = 3
 
 
 # ------------------------------------------------------------------ data
@@ -186,6 +197,21 @@ def abs_series() -> dict[str, list]:
     }
 
 
+def _lead_forward(series: list[tuple[date, float]], quarters: int = 1
+                 ) -> list[tuple[date, float]]:
+    """Move every observation's date forward by `quarters` quarters; values
+    untouched. Plots the flow measures one quarter AHEAD of their true month so
+    each flow reading lines up with the wage print it precedes (flows lead pay
+    by a quarter). Unlike empmod.lead this shifts the TIME axis, not the values,
+    so each point keeps its own z-score against history."""
+    out = []
+    for d, v in series:
+        y = d.year + (d.month - 1 + quarters * 3) // 12
+        m = (d.month - 1 + quarters * 3) % 12 + 1
+        out.append((date(y, m, 1), v))
+    return out
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS gross flows (100MB, once a month)…")
 def flow_series() -> dict:
     """The three flow measures the second Labour chart plots, as z-scores.
@@ -206,15 +232,15 @@ def flow_series() -> dict:
 
     return {
         "finding": finding, "switching": switching, "wages": wages,
-        "z_finding": empmod.zscores(empmod.lead(finding)),
-        "z_switching": empmod.zscores(empmod.lead(switching)),
+        "z_finding": _lead_forward(empmod.zscores(finding), empmod.FLOW_LEAD_QUARTERS),
+        "z_switching": _lead_forward(empmod.zscores(switching), empmod.FLOW_LEAD_QUARTERS),
         "z_wages": empmod.zscores(wages),
         "period": absmod.latest_release(absmod.LF_LANDING) or "",
     }
 
 
 def manual_series(name: str) -> list[tuple[date, float]]:
-    """A pasted series off disk, for the sources with no public feed."""
+    """A manual series off disk, for the sources with no public feed."""
     try:
         with open(MANUAL_SERIES_PATH, encoding="utf-8") as fh:
             raw = json.load(fh)
@@ -230,16 +256,23 @@ def manual_series(name: str) -> list[tuple[date, float]]:
     return sorted(out)
 
 
-def save_manual_series(name: str, rows: list[tuple[date, float]]) -> None:
-    try:
-        with open(MANUAL_SERIES_PATH, encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError):
-        raw = {}
-    raw[name] = [[d.isoformat(), v] for d, v in rows]
-    MANUAL_SERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(MANUAL_SERIES_PATH, "w", encoding="utf-8") as fh:
-        json.dump(raw, fh, indent=2)
+def trailing_mean(series: list[tuple[date, float]],
+                  window: int) -> list[tuple[date, float]]:
+    """Trailing (causal) moving average over `window` consecutive monthly obs.
+
+    The first `window - 1` points get a partial window so the line starts at
+    the first observation rather than leaving a gap. Used for the capacity MA
+    line, which must extend live as the monthly release arrives — so it is
+    derived here from the stored grey series rather than saved as its own series.
+    """
+    if not series or window < 1:
+        return []
+    vals = [v for _, v in series]
+    out = []
+    for i in range(len(vals)):
+        lo = max(0, i - window + 1)
+        out.append((series[i][0], sum(vals[lo:i + 1]) / (i - lo + 1)))
+    return out
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS CPI workbooks…")
@@ -1225,75 +1258,82 @@ with LEFT:
         lr1, lr2 = st.columns(2, gap="medium")
         with lr1:
             capacity = manual_series(NAB_CAPACITY)
+            capacity_ma = (trailing_mean(capacity, CAPACITY_MA_WINDOW)
+                          if capacity else None)
             st.altair_chart(
                 charts.capacity_vs_unemployment(
                     capacity, data.get("unemployment", []), P, hist_start,
-                    charts.Vintage(last_modified=data_asof(data))),
+                    charts.Vintage(last_modified=data_asof(data)),
+                    capacity_ma=capacity_ma),
                 width="stretch", theme=None)
-            C.legend(([("Capacity utilisation, inverted", P.categorical[6])]
+            C.legend(([("NAB capacity utilisation, inverted, lhs", charts.MA_BLUE)]
                       if capacity else [])
-                     + [("Unemployment rate", P.categorical[7])])
+                     + [("Unemployment rate, rhs", P.categorical[7])])
             if not capacity:
                 C.note(
-                    "No capacity utilisation series. NAB's is commercial with no "
-                    "public feed — the expander below takes a paste of it. Until "
-                    "then only the unemployment rate is plotted.")
+                    "No capacity utilisation series is loaded. NAB's is "
+                    "commercial with no public feed, so only the unemployment "
+                    "rate is plotted.")
             else:
                 C.note(
-                    "The two axes are pinned by each series' own range, so the "
-                    "vertical gap between the lines means nothing. Only their "
-                    "shapes do.")
+                    "Drawn to the CIO Analytics bench: fixed axes (utilisation "
+                    "70.0–87.5 inverted on the left, unemployment 3–9 on the "
+                    "right, which also carries the gridlines), and the labelled "
+                    f"navy line is a trailing {CAPACITY_MA_WINDOW}-month moving "
+                    "average of the raw monthly prints — the thin grey line "
+                    "behind it. The grey series is digitised off the bench "
+                    "chart for 2000–2018 (NAB's back-history is commercial) and "
+                    "holds the official prints from Jan 2019 on; the navy moving "
+                    "average spans the full series.")
 
         with lr2:
             flows = flow_series()
-            fkeys = {"Job-finding rate (fwd 1 qtr)": flows["z_finding"],
-                     "Job-switching rate (fwd 1 qtr)": flows["z_switching"],
-                     "Quarterly WPI growth": flows["z_wages"]}
+            # Last true data period for each series (before the visual 1q lead),
+            # carried into the legend so the reader sees how fresh each line is.
+            _monyy = lambda d: d.strftime("%b '%y")
+            f_lbl = f"Job-finding (fwd 1q, to {_monyy(flows['finding'][-1][0])})"
+            s_lbl = f"Job-switching (fwd 1q, to {_monyy(flows['switching'][-1][0])})"
+            w_lbl = f"Quarterly WPI growth (to {_monyy(flows['wages'][-1][0])})"
+            fkeys = {f_lbl: flows["z_finding"],
+                     s_lbl: flows["z_switching"],
+                     w_lbl: flows["z_wages"]}
             order = [k for k, v in fkeys.items() if v]
             if not order:
                 st.info("No flow data — the ABS gross-flows cube did not "
                         "download. See the Data tab.")
             else:
+                # Fixed colours for the flows panel: WPI dark blue,
+                # job-finding grey, job-switching light blue. Theme-aware so
+                # each still reads on the dark surface.
+                dark = P.mode == "dark"
+                flow_colours = {
+                    w_lbl: "#08203f" if not dark else "#5b9bd5",
+                    f_lbl: "#8a8a8a" if not dark else "#a8a8a8",
+                    s_lbl: "#6baed6" if not dark else "#9ecbff",
+                }
+                # WPI solid; the two flow measures dotted so they read as the
+                # secondary series against the dark reference line.
+                flow_dashes = {
+                    w_lbl: [1, 0],
+                    f_lbl: [2, 3],
+                    s_lbl: [2, 3],
+                }
                 st.altair_chart(
                     charts.labour_flows(fkeys, order, P, hist_start,
-                                        charts.Vintage(last_modified=data_asof(data))),
+                                        charts.Vintage(last_modified=data_asof(data)),
+                                        colors=flow_colours, dashes=flow_dashes),
                     width="stretch", theme=None)
-                C.legend([(n, P.categorical[i]) for i, n in enumerate(order)])
+                C.legend([(n, flow_colours.get(n, P.categorical[i]))
+                          for i, n in enumerate(order)])
                 C.note(
-                    "The flow measures are led one quarter against wages: a "
-                    "worker who moves in March negotiates a pay rate that lands "
-                    "in the June index. Job-switching is a proxy — Australia "
-                    "publishes no quits rate, so this counts everyone under a "
-                    "year with their current employer, which includes people "
-                    "who came from unemployment rather than from another job.")
-
-        st.divider()
-        with st.expander(f"Paste a {NAB_CAPACITY} series"):
-            C.note(
-                "NAB's capacity utilisation has no public feed. Paste it from a "
-                "terminal that licences it — one row per period, a date and a "
-                "number, comma or tab separated. Dates read as ISO "
-                "(2026-06-01), Australian (30/06/2026) or a bare month "
-                "(Jun-2026). Unreadable lines are skipped rather than "
-                "rejecting the paste.")
-            pasted = st.text_area(
-                "Date, value", height=140, key="paste_capacity",
-                placeholder="2026-06-01, 81.4\n2026-05-01, 81.9\n…")
-            pc1, pc2 = st.columns([1, 3])
-            if pc1.button("Save series", width="stretch"):
-                rows = empmod.parse_pasted_series(pasted)
-                if rows:
-                    save_manual_series(NAB_CAPACITY, rows)
-                    st.success(f"Saved {len(rows)} observations "
-                               f"({rows[0][0]:%b %Y} – {rows[-1][0]:%b %Y}).")
-                    st.rerun()
-                else:
-                    st.warning("Nothing readable in that paste.")
-            existing = manual_series(NAB_CAPACITY)
-            if existing:
-                pc2.caption(
-                    f"Currently holding {len(existing)} observations, "
-                    f"{existing[0][0]:%b %Y} – {existing[-1][0]:%b %Y}.")
+                    "The flow measures are plotted one quarter AHEAD of their "
+                    "true month, so each flow reading lines up with the wage "
+                    "print it precedes: a worker who moves in March negotiates "
+                    "a pay rate that lands in the June index. Job-switching is a "
+                    "proxy — Australia publishes no quits rate, so this counts "
+                    "everyone under a year with their current employer, which "
+                    "includes people who came from unemployment rather than "
+                    "from another job.")
 
         with st.expander("Series with no free feed"):
             C.note(
@@ -1666,16 +1706,20 @@ with LEFT:
                      ("Job-finding rate (quarterly)", _flows["finding"]),
                      ("Job-switching rate (quarterly)", _flows["switching"]),
                      ("WPI, % q/q (RBA H4)", _flows["wages"]),
-                     (f"{NAB_CAPACITY} (pasted)", _cap)] if v]
+                     (f"{NAB_CAPACITY} (digitised)", _cap)] if v]
                 or [["nothing loaded", "0", "—", "—"]],
                 numeric=(1,))
         C.note(
             "The gross-flows cube is a 100MB download and a million rows, so it "
             "is aggregated to national totals during the parse and only the "
-            "aggregate is cached — 228 months by 16 status pairs. Behind the "
-            "release-keyed disk cache that happens once a month. NAB capacity "
-            "utilisation is commercial with no public feed; the Labour tab "
-            "takes a paste of it and stores it in meetings/_manual_series.json.")
+            "aggregate is cached — 228 months by 16 status pairs, refreshed "
+            "once a month behind the release-keyed disk cache. NAB capacity "
+            "utilisation is commercial with no public feed; its series is held "
+            "in meetings/_manual_series.json (digitised off the bench for "
+            "2000–2018, with the official prints from Jan 2019 on) and read by "
+            "the Labour tab. The dark-blue line on the Labour tab is a moving "
+            "average of that capacity series, derived in-app across the full "
+            "history.")
 
         st.divider()
         C.section("ABS CPI series",
