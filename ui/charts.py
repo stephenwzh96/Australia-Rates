@@ -300,24 +300,29 @@ def capital_at_risk(ladder, p: Palette, height: int = 230) -> alt.LayerChart:
     plotted as a third series -- it is the x-axis, and a percentage drawn on a
     dollar scale just pins a flat line to zero.
     """
+    # d3-format's `$` type emits a bare dollar sign with no way to prefix a
+    # literal, so the money labels are formatted in pandas and drawn as text.
+    # The axis and tooltips carry "A$" in their titles instead.
     rows = []
     for r in ladder.rungs:
-        rows.append({"g": r.growth, "amount": r.max_loss, "kind": "Max loss $",
+        rows.append({"g": r.growth, "amount": r.max_loss, "kind": "Max loss A$",
+                     "money": f"A${r.max_loss:,.0f}",
                      "rung": r.label, "selected": r.is_selected,
                      "ok": r.within_daily_limit, "contracts": r.contracts})
-        rows.append({"g": r.growth, "amount": r.max_gain, "kind": "Max gain $",
+        rows.append({"g": r.growth, "amount": r.max_gain, "kind": "Max gain A$",
+                     "money": f"A${r.max_gain:,.0f}",
                      "rung": r.label, "selected": r.is_selected,
                      "ok": r.within_daily_limit, "contracts": r.contracts})
     df = pd.DataFrame(rows)
 
-    scale = alt.Scale(domain=["Max gain $", "Max loss $"],
+    scale = alt.Scale(domain=["Max gain A$", "Max loss A$"],
                       range=[p.positive, p.negative])
     x_enc = alt.X("g:Q", axis=alt.Axis(format=".2%", title="expected growth per bet",
                                        tickCount=len(ladder.rungs)))
-    y_enc = alt.Y("amount:Q", axis=alt.Axis(title="$", format="$,.0f"))
+    y_enc = alt.Y("amount:Q", axis=alt.Axis(title="A$", format=",.0f"))
     tooltip = [alt.Tooltip("rung:N", title="Kelly"),
                alt.Tooltip("kind:N", title=""),
-               alt.Tooltip("amount:Q", format="$,.0f", title="amount"),
+               alt.Tooltip("money:N", title="amount"),
                alt.Tooltip("g:Q", format=".2%", title="g/bet"),
                alt.Tooltip("contracts:Q", title="lots"),
                alt.Tooltip("ok:N", title="within daily limit")]
@@ -349,13 +354,13 @@ def capital_at_risk(ladder, p: Palette, height: int = 230) -> alt.LayerChart:
     labels = (
         alt.Chart(df).mark_text(align="left", dx=8, dy=-7, fontSize=10,
                                 fontWeight="bold")
-        .encode(x=x_enc, y=y_enc, text=alt.Text("amount:Q", format="$,.0f"),
+        .encode(x=x_enc, y=y_enc, text=alt.Text("money:N"),
                 color=alt.Color("kind:N", scale=scale, legend=None),
                 opacity=alt.condition(alt.datum.selected, alt.value(1.0),
                                       alt.value(0.6)))
     )
     rung_names = (
-        alt.Chart(df[df["kind"] == "Max loss $"])
+        alt.Chart(df[df["kind"] == "Max loss A$"])
         .mark_text(align="center", dy=16, fontSize=10, color=p.muted)
         .encode(x=x_enc, y=y_enc, text="rung:N")
     )

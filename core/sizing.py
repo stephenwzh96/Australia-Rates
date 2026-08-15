@@ -431,5 +431,5 @@ def step_up_verdict(frm: Rung, to: Rung) -> str:
     if extra <= 0:
         return ""
     flag = "" if to.within_daily_limit else "  — but that breaches the daily limit."
-    return (f"{frm.label} to {to.label}: ${extra:,.0f} more at risk buys "
+    return (f"{frm.label} to {to.label}: A${extra:,.0f} more at risk buys "
             f"{gained:+.1f}pp of growth.{flag}")
