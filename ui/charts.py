@@ -499,6 +499,70 @@ def priced_path(steps, spot: float, p: Palette, height: int = 240) -> alt.LayerC
     return _apply(alt.layer(*layers), p, height)
 
 
+def instrument_history(history: list[tuple[date, float]],
+                       curve: list[tuple[date, float]],
+                       p: Palette, start: date | None = None,
+                       vintage: "Vintage | None" = None,
+                       title: str = "", height: int = 240) -> alt.LayerChart:
+    """The rate a contract settles against, against the strip quoted today.
+
+    The ASX feed carries no price history for either strip -- `days` is
+    accepted but inert (see `data.asx`) -- so there is nothing to read a
+    contract's own past PRICE off. What is available, keyless and daily, is
+    the RBA's own published rate each contract settles ON: AONIA for IB,
+    whose fix is the simple average of it across the delivery month, and
+    3-month BBSW for IR, whose fix IS a single BBSW print. Both lines are
+    therefore read directly off their own source rather than approximated
+    from the other instrument. `curve` is the strip quoted today, one point
+    per contract's own delivery month (which sits in the future relative to
+    `history`), so the join is the actual cross-check: does the curve
+    continue from where the rate has actually been printing, or has it
+    already gapped away from it.
+
+    `history` must be non-empty -- callers hold the chart back rather than
+    invoke this on nothing, the same convention every other chart here uses.
+    """
+    hist_df = pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                            for d, v in history])
+    hist_df = _since(hist_df, start)
+    curve_df = pd.DataFrame([{"when": pd.Timestamp(d), "value": float(v)}
+                             for d, v in curve])
+    axis_df = (pd.concat([hist_df[["when"]], curve_df[["when"]]], ignore_index=True)
+              if len(curve_df) else hist_df)
+
+    layers = [
+        alt.Chart(hist_df).mark_line(strokeWidth=LINE_WIDTH, clip=True).encode(
+            x=alt.X("when:T", axis=_time_axis(axis_df)),
+            y=alt.Y("value:Q", axis=alt.Axis(title="%", format=".2f"),
+                   scale=alt.Scale(zero=False)),
+            color=alt.value(p.ink_secondary),
+            tooltip=[alt.Tooltip("when:T", title="date"),
+                     alt.Tooltip("value:Q", format=".3f", title="rate (%)")],
+        )
+    ]
+    if len(curve_df):
+        layers.append(
+            alt.Chart(curve_df)
+            .mark_line(strokeWidth=LINE_WIDTH, strokeDash=[4, 3], clip=True)
+            .encode(x="when:T", y="value:Q", color=alt.value(p.accent))
+        )
+        layers.append(
+            alt.Chart(curve_df).mark_point(
+                filled=True, size=POINT_SIZE - 20, color=p.accent,
+                stroke=p.surface, strokeWidth=1.5,
+            ).encode(
+                x="when:T", y="value:Q",
+                tooltip=[alt.Tooltip("when:T", title="contract month"),
+                         alt.Tooltip("value:Q", format=".3f", title="implied %")],
+            )
+        )
+
+    chart = alt.layer(*layers)
+    if title:
+        chart = chart.properties(title=vintage_title(title, vintage, p))
+    return _apply(chart, p, height)
+
+
 def bbsw_basis(periods, p: Palette, height: int = 200) -> alt.LayerChart:
     """BBSW/OIS basis per bill contract: what IR prices, less the IB path.
 

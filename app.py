@@ -146,6 +146,18 @@ def bbsw_history() -> list[tuple[date, float]]:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def cash_rate_history() -> list[tuple[date, float]]:
+    """Daily interbank overnight cash rate (AONIA) -- the rate an IB contract
+    actually settles against, being the simple average of it across the
+    delivery month. The Curve tab's instrument-history cross-check plots this
+    directly rather than approximating IB from a different instrument, for
+    the same reason `bbsw_history` plots BBSW directly for IR: the ASX feed
+    itself carries no price history at all for either strip to read one off.
+    """
+    return [(o.date, o.value) for o in fetch_rba_table().get(rba.CASH_TRADED_CODE, [])]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def kill_series_history() -> dict[str, list]:
     """Recent history for each auto-wired kill criterion, for its sparkline.
 
@@ -1435,6 +1447,75 @@ with LEFT:
                         C.note("Prices: ASX 30 day interbank cash rate futures (IB) and 90 "
                                "day bank bill futures (IR), from the exchange's own "
                                "end-of-day file. Delayed, and not a settlement source.")
+
+        # ---------------------------------- Cross-checks — instrument history
+        # Outside the `if not live` gate above and independent of the view
+        # toggle and of `anchor`/`PATH`: the RBA history it plots comes off a
+        # different source (table F1) to the ASX strip, so it stays
+        # informative even when the strip itself is dead or unpriced.
+        st.divider()
+        xhdr, xhlp = st.columns([1, 0.06], vertical_alignment="center")
+        with xhdr:
+            st.markdown("### Cross-checks — instrument history")
+        with xhlp:
+            C.formula_help(
+                "",
+                "Neither ASX strip carries any price history to read a contract's "
+                "own past off -- the feed's `days` parameter is accepted but inert "
+                "(see the Data tab). What is available, keyless and daily, is the "
+                "RBA's own published rate each contract settles ON: AONIA for IB, "
+                "whose fix is the simple average of it across the delivery month, "
+                "and 3-month BBSW for IR, whose fix IS a single BBSW print. Both are "
+                "read directly off their own source in preference to approximating "
+                "one instrument's history from the other. The dashed line is the "
+                "strip quoted today, one point per contract's own delivery month -- "
+                "the cross-check is whether it continues from where the rate has "
+                "actually been printing.",
+                "", "curve-hist")
+        hist_c = st.segmented_control(
+            "History window", HISTORY_WINDOWS, default="3Y",
+            key="hist_window_curve", label_visibility="collapsed")
+        hist_c_start = _history_window_start(hist_c)
+
+        hc1, hc2 = st.columns(2, gap="medium")
+        with hc1:
+            ib_hist = cash_rate_history()
+            if ib_hist:
+                ib_curve_pts = [(q.month, q.implied_rate) for q in ib_quotes if q.ok]
+                st.altair_chart(
+                    charts.instrument_history(
+                        ib_hist, ib_curve_pts, P, hist_c_start,
+                        charts.Vintage(last_modified=ib_hist[-1][0]),
+                        title="IB — interbank cash rate"),
+                    width="stretch", theme=None)
+                C.legend([("AONIA, daily (RBA table F1)", P.ink_secondary),
+                          ("Live strip, by delivery month", P.accent)])
+            else:
+                C.note("No RBA cash rate history available.")
+        with hc2:
+            ir_hist = bbsw_history()
+            if ir_hist:
+                ir_curve_pts = [(q.month, q.implied_rate) for q in ir_quotes if q.ok]
+                st.altair_chart(
+                    charts.instrument_history(
+                        ir_hist, ir_curve_pts, P, hist_c_start,
+                        charts.Vintage(last_modified=ir_hist[-1][0]),
+                        title="IR — 3-month BBSW"),
+                    width="stretch", theme=None)
+                C.legend([("3-month BBSW, daily (RBA table F1)", P.ink_secondary),
+                          ("Live strip, by delivery month", P.accent)])
+            else:
+                C.note("No BBSW history available.")
+        C.note("Both lines are the rate the contract settles against, not a traded "
+               "contract price series -- ASX publishes no price history for either "
+               "strip. IB's fix is a MONTHLY AVERAGE, so a single day's AONIA print "
+               "is not itself a settlement price, only one input to one; treat the "
+               "IB line as the underlying the contract prices, not the contract "
+               "itself. IR's fix is a SINGLE day, so 100 minus 3-month BBSW on any "
+               "date is exactly what that contract would settle at if that date were "
+               "its last trading day -- the closer of the two to a genuine price "
+               "series. Neither line carries the term premium a real futures quote "
+               "would.")
 
     # -------------------------------------------- 3. Sensitivity & size
     elif section == "Sensitivity & size":
