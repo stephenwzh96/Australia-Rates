@@ -2637,6 +2637,12 @@ with LEFT:
                 "not assert policy views for people it has not sourced. Fill the names from "
                 "rba.gov.au and set the scores from each member's own speeches.")
 
+        # Namespaced by meeting, like CURVE_SPOT_KEY and pt_partial_* above:
+        # a bare "roster_editor" key keeps its widget state across a meeting
+        # switch, so a fresh meeting's rows would be zipped positionally
+        # against the PREVIOUS meeting's edited grid values below and silently
+        # corrupt the new meeting's saved roster with the old one's read.
+        _roster_key = f"roster_editor_{S.get('meeting')}"
         edited = st.data_editor(
             [{"Member": r.get("name", ""), "Role": r.get("role", ""),
               "Bloc": r.get("bloc", ""), "Hawk-dove": float(r.get("score", 2.5)),
@@ -2648,9 +2654,9 @@ with LEFT:
                 "Mover": st.column_config.CheckboxColumn(
                     help="Counted in P(bloc moves), whatever their bloc."),
             },
-            hide_index=True, width="stretch", key="roster_editor")
-        if edited != st.session_state.get("_roster_snapshot"):
-            st.session_state["_roster_snapshot"] = edited
+            hide_index=True, width="stretch", key=_roster_key)
+        if edited != st.session_state.get(f"_roster_snapshot_{S.get('meeting')}"):
+            st.session_state[f"_roster_snapshot_{S.get('meeting')}"] = edited
             S["roster"] = [
                 {**old, "name": row["Member"], "role": row["Role"], "bloc": row["Bloc"],
                  "score": float(row["Hawk-dove"]), "is_mover": bool(row["Mover"])}
@@ -2696,10 +2702,17 @@ with LEFT:
             "ASX interest rate futures (Markit)", ib_ok and ir_ok,
             f"IB {len(ib_quotes)} contracts, IR {len(ir_quotes)} contracts. "
             f"Settled {ib_ref or 'unknown'}.", P)
+        # `rba_ok` only gates on the cash rate; `bbsw`/`gap_bp` are computed
+        # independently in `rba_spot()` and can each be None on their own
+        # (partial F1 data), so each is guarded on its own rather than
+        # trusting `rba_ok` to cover all three -- the pattern already used
+        # for `spot_basis_bp` on the Curve tab.
+        _bbsw_txt = "unknown" if spot["bbsw"] is None else f"{spot['bbsw']}%"
+        _gap_txt = "unknown" if spot["gap_bp"] is None else f"{spot['gap_bp']:+.1f}bp"
         C.data_source_header(
             "RBA statistical table F1", rba_ok,
-            f"Cash rate {spot['cash']}%, 3-month BBSW {spot['bbsw']}%, "
-            f"AONIA gap {spot['gap_bp']:+.1f}bp." if rba_ok else "unavailable", P)
+            f"Cash rate {spot['cash']}%, 3-month BBSW {_bbsw_txt}, "
+            f"AONIA gap {_gap_txt}." if rba_ok else "unavailable", P)
 
         _abs = abs_series()
         _lf_period, _lfd_period = (_abs.get("_periods") or ["", ""])[:2]
@@ -2735,8 +2748,8 @@ with LEFT:
         st.divider()
         C.section("IB strip", "30 day interbank cash rate futures.")
         C.table(["Contract", "Settlement", "Implied rate", "Chg", "Bid/ask", "Volume", "Flag"],
-                [[q.code, f"{q.price:.3f}" if q.price else "—",
-                  f"{q.implied_rate:.3f}%" if q.implied_rate else "—",
+                [[q.code, "—" if q.price is None else f"{q.price:.3f}",
+                  "—" if q.implied_rate is None else f"{q.implied_rate:.3f}%",
                   "—" if q.change_bp is None else f"{q.change_bp:+.1f}bp",
                   "—" if q.spread_bp is None else f"{q.spread_bp:.1f}bp",
                   f"{q.volume:,.0f}" if q.volume else "0",
@@ -2752,8 +2765,8 @@ with LEFT:
         st.divider()
         C.section("IR strip", "90 day bank accepted bill futures.")
         C.table(["Contract", "Settlement", "Implied BBSW", "Bid/ask", "Volume", "Flag"],
-                [[q.code, f"{q.price:.3f}" if q.price else "—",
-                  f"{q.implied_rate:.3f}%" if q.implied_rate else "—",
+                [[q.code, "—" if q.price is None else f"{q.price:.3f}",
+                  "—" if q.implied_rate is None else f"{q.implied_rate:.3f}%",
                   "—" if q.spread_bp is None else f"{q.spread_bp:.1f}bp",
                   f"{q.volume:,.0f}" if q.volume else "0",
                   "stale" if asx.is_stale(q, ir_ref) else ""] for q in ir_quotes])
