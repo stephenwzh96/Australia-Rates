@@ -262,8 +262,24 @@ class Panel:
 
     @property
     def total_delta(self) -> float | None:
-        a, b = self.total_z, self.total_prior_z
-        return None if a is None or b is None else a - b
+        """Mean change in z-score, over rows carrying BOTH a current and a
+        prior reading.
+
+        Deliberately NOT `total_z - total_prior_z`. Those two average over
+        their own best-available population -- correct for the two dots the
+        chart plots -- but a computed row's `current` and `prior` come from
+        the same series and are present or absent together, whereas a
+        `manual_row` takes them from two independently typed fields (see
+        `app.py`'s Latest/prior text inputs). Typing a current reading and
+        leaving the prior field blank puts that row in `total_z`'s average
+        but not `total_prior_z`'s, so their difference reads a population
+        mismatch as if it were the panel moving. Averaging `delta_z` instead
+        is the same arithmetic wherever the population already matches (the
+        mean of a difference equals the difference of means over one set of
+        rows) and simply excludes a row from the comparison when it doesn't.
+        """
+        deltas = [r.delta_z for r in self.scored if r.delta_z is not None]
+        return sum(deltas) / len(deltas) if deltas else None
 
     @property
     def n_scored(self) -> int:
