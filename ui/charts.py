@@ -634,11 +634,18 @@ def mc_fan_chart(result, points: float, size: float, side: Side, p: Palette,
     ddf = pd.DataFrame(diffusion_rows)
     scale = alt.Scale(domain=["positive", "negative"], range=[p.positive, p.negative])
 
-    # With markers on, the axis is dated: `result.days` gives the real date for
-    # each step, and the jump lands one slot past the last one.
-    dated = bool(release_days) and bool(getattr(result, "days", None))
+    # With markers on, the axis is dated: `result.days` gives the real date
+    # for each step, and the jump lands one slot past the last one.
+    #
+    # `row["day"]` is a column index into `SamplePath.levels`, where column 0
+    # is the ENTRY level with no step taken yet -- it lands on `result.when`,
+    # not on `result.days[0]` (the date of the FIRST step). `by_index` has to
+    # carry `when` at position 0 for that reason, or every column reads one
+    # trading day later than the level it actually holds.
+    dated = (bool(release_days) and bool(getattr(result, "days", None))
+            and getattr(result, "when", None) is not None)
     if dated:
-        by_index = list(result.days) + [result.days[-1] + timedelta(days=1)]
+        by_index = [result.when] + list(result.days) + [result.days[-1] + timedelta(days=1)]
         for row in diffusion_rows:
             row["at"] = by_index[min(row["day"], len(by_index) - 1)]
         for row in jump_rows:
@@ -681,10 +688,14 @@ def mc_fan_chart(result, points: float, size: float, side: Side, p: Palette,
         palette = family_colour or {}
         rows = []
         for day_idx, names in sorted(release_days.items()):
-            if day_idx >= len(by_index):
+            # `day_idx` indexes `result.days` directly (built from it in
+            # app.py's `day_index` map), NOT the diffusion's `by_index` --
+            # that array now carries `when` at position 0 and would read one
+            # day late here if reused.
+            if day_idx >= len(result.days):
                 continue
             for n_ in names:
-                rows.append({"at": by_index[day_idx], "release": n_,
+                rows.append({"at": result.days[day_idx], "release": n_,
                              "colour": palette.get(n_, p.muted),
                              "label": " · ".join(names)})
         if rows:

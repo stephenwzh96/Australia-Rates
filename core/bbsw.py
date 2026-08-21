@@ -90,6 +90,20 @@ def rate_on(path: StripPath, when: date) -> float:
     return rate
 
 
+def touches_unreliable(path: StripPath, up_to: date) -> bool:
+    """True if any step effective at-or-before `up_to` is stale or ambiguous.
+
+    `rate_on`/`segments` read straight through `path.steps` with no check of
+    `step.reliable` -- correctly, since a bill period still has to reflect
+    whatever the strip actually carries. But `StripPath.terminal`/`.peak`
+    already refuse to build a headline number from an unreliable step (see
+    `core.strip.StripPath.reliable_steps`), and a `BillPeriod` built on the
+    same tainted step must refuse the same way rather than reading as clean.
+    """
+    return any(not step.reliable and effective_date(step.meeting.end) <= up_to
+               for step in path.steps)
+
+
 def segments(path: StripPath, start: date, end: date) -> list[tuple[float, int]]:
     """The path across [start, end) as (rate, days) pieces."""
     out: list[tuple[float, int]] = []
@@ -303,6 +317,12 @@ def analyse(quotes, path: StripPath, meetings: list[Meeting],
                 if before and size:
                     cash_prob = cash_step / size if len(before) == 1 else None
 
+        # A BillPeriod is stale if the IR quote itself is (per `stale_codes`),
+        # OR if any IB step it was priced against is -- otherwise a basis or
+        # cash-equivalent reading built on a non-printing IB month renders as
+        # clean, which is exactly the failure this module exists to catch.
+        path_stale = path.ok and touches_unreliable(path, covers_end)
+
         out.append(BillPeriod(
             code=q.code, month=q.month, fix_date=fix,
             covers_start=covers_start, covers_end=covers_end,
@@ -312,7 +332,7 @@ def analyse(quotes, path: StripPath, meetings: list[Meeting],
             spot_basis_bp=spot_basis_bp, cash_equivalent=cash_eq,
             cash_equivalent_step_bp=cash_step, cash_equivalent_prob=cash_prob,
             change_bp=q.change_bp,
-            stale=q.code in stale, beyond_horizon=beyond,
+            stale=q.code in stale or path_stale, beyond_horizon=beyond,
         ))
 
     return BillCurve(periods=out)

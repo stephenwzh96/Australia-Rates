@@ -319,8 +319,13 @@ class MonteCarloResult:
     counts: dict[str, float]
     sample_paths: list[SamplePath] = field(default_factory=list)
     # The actual dates the diffusion steps land on, so a chart can put the
-    # calendar on its x-axis instead of an index nobody can act on.
+    # calendar on its x-axis instead of an index nobody can act on. `days[i]`
+    # is the date of diffusion step i+1 -- `SamplePath.levels[0]` is the
+    # entry level with no step taken yet, which lands on `when`, not on
+    # `days[0]`. A chart mapping `levels`' column index straight into `days`
+    # is off by one day for exactly that reason.
     days: tuple[date, ...] = ()
+    when: date | None = None        # the entry date `days` was built from
     # Partial take-profit scale-out (optional): bank `partial_share` when the
     # level hits `partial_target_level`; the rest runs to the full target.
     partial_target_level: float | None = None
@@ -334,6 +339,7 @@ def simulate_exit_paths(
     trading_days: int, mc_trials: int = DEFAULT_MC_TRIALS,
     n_sample_paths: int = DEFAULT_SAMPLE_PATHS, seed: int = 0,
     vol_uncertainty: bool = False, days: list[date] | None = None,
+    when: date | None = None,
     partial_target_level: float | None = None, partial_share: float = 0.5,
 ) -> MonteCarloResult:
     """`size` only sets where the terminal jump lands (0 or `size`) for the
@@ -400,7 +406,7 @@ def simulate_exit_paths(
         vol=vol, trading_days=trading_days, mc_trials=mc_trials,
         target_level=target_level, stop_level=stop_level,
         p_target_first=p_target, p_stop_first=p_stop, p_rode_out=p_neither,
-        counts=counts, sample_paths=samples, days=tuple(days or ()),
+        counts=counts, sample_paths=samples, days=tuple(days or ()), when=when,
         partial_target_level=partial_target_level, partial_share=partial_share,
         frac_reached_full=frac_full,
     )

@@ -233,9 +233,20 @@ def snap_fraction(value: float | None,
 # --------------------------------------------------------------------------
 
 def growth_rate(f: float, p_win: float, b: float) -> float:
-    """Expected log growth per bet at bankroll fraction `f`."""
+    """Expected log growth per bet at bankroll fraction `f`.
+
+    `p_win >= 1.0` (a riskless bet -- q lands at exactly 0% or 100%) has no
+    losing branch to blow up on, so `f >= 1.0` must not hit the blanket ruin
+    case below: that would floor every rung's `growth_share` at zero even
+    though there is nothing to be ruined by. The loss term drops out
+    entirely rather than being computed and zero-weighted, because
+    `math.log(1.0 - f)` at `f == 1.0` raises before the weight is ever
+    applied.
+    """
     if f <= 0.0:
         return 0.0
+    if p_win >= 1.0:
+        return math.log(1.0 + f * (1e9 if b == float("inf") else b))
     if f >= 1.0:
         return float("-inf")
     if b == float("inf"):

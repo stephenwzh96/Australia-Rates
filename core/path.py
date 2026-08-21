@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Sequence
 
-from .pricing import Side, expected_value, implied_probability
+from .pricing import Direction, Side, expected_value, implied_probability
 
 LADDER_STEPS = 5
 
@@ -141,6 +141,7 @@ def exit_map(
     points: float,
     size: float,
     side: Side = "fade",
+    direction: Direction = "hike",
     reassess_target: float | None = None,
     reassess_stop: float | None = None,
     position_dv01: float | None = None,
@@ -159,11 +160,23 @@ def exit_map(
 
     `capture` converts event basis points into contract price basis points
     (see `core.contracts`). One bp of the event moves the contract by
-    `capture` bp, so the exit price is `current + capture*mtm/100`. At full
-    capture -- the contract you should normally be in -- that is the plain
-    `mtm/100` it has always been; at 47% capture the contract simply does not
-    travel as far, and quoting the untouched price would have you working an
-    order at a level the contract cannot reach for that outcome.
+    `capture` bp, so the exit price is `current + capture*price_delta/100`.
+    At full capture -- the contract you should normally be in -- that is the
+    plain `price_delta/100` it has always been; at 47% capture the contract
+    simply does not travel as far, and quoting the untouched price would have
+    you working an order at a level the contract cannot reach for that
+    outcome.
+
+    `price_delta` is NOT `mtm` (`side`'s P&L is direction-agnostic per
+    `core.pricing`'s own docstring -- direction only changes the sign of the
+    STRIP mapping, never the payoff). A contract is quoted `100 - yield`, so
+    more of the event priced (`level` rising toward `size`) pushes the price
+    DOWN when the event is a hike and UP when it is a cut, regardless of
+    which side of the trade you are on. That is exactly the shape of
+    `mtm_at(..., "fade")` for a hike and `mtm_at(..., "back")` for a cut, so
+    `price_delta` is computed against `direction`, not `side` -- conflating
+    the two priced every fade-a-cut or back-a-hike exit on the wrong side of
+    the current market price.
 
     `hard_stop` (optional) is a non-negotiable RISK floor beyond the reassess
     stop -- the worst case if you hold past the thesis decision or the order
@@ -177,14 +190,16 @@ def exit_map(
     default_target, default_stop = reassess_defaults(points, size, side)
     rt = default_target if reassess_target is None else reassess_target
     rs = default_stop if reassess_stop is None else reassess_stop
+    price_side: Side = "fade" if direction == "hike" else "back"
 
     def row(role: str, structural: bool, label: str, level: float) -> ExitLevel:
         mtm = mtm_at(points, level, side)
+        price_delta = mtm_at(points, level, price_side)
         return ExitLevel(
             role=role, structural=structural, label=label, level=level,
             implied=implied_probability(level, size), mtm=mtm,
             price=(None if current_price is None
-                   else current_price + capture * mtm / 100.0),
+                   else current_price + capture * price_delta / 100.0),
             pnl=None if position_dv01 is None else mtm * position_dv01,
             # A bound is defined by the contract, so it is never "misplaced";
             # only the levels someone chose can be.

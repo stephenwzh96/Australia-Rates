@@ -283,7 +283,7 @@ def build(state: dict[str, Any],
         partial_target_level = _f(pth.get("partial_target_level")) or None
         partial_share = _f(pth.get("partial_share")) or 0.5
         exit_levels = path.exit_map(
-            points, size, side,
+            points, size, side, direction,
             reassess_target=target_level, reassess_stop=stop_level,
             position_dv01=selected_rung.position_dv01 if selected_rung else None,
             current_price=_f(pth.get("current_price")),
@@ -360,7 +360,7 @@ def build(state: dict[str, Any],
                     vol_estimate, schedule=tuple(vol_schedule.sigmas))
             monte_carlo = montecarlo.simulate_exit_paths(
                 points, size, q, target_level, stop_level, vol_estimate, trading_days,
-                vol_uncertainty=bool(pth.get("vol_uncertainty")), days=sim_days,
+                vol_uncertainty=bool(pth.get("vol_uncertainty")), days=sim_days, when=when,
                 partial_target_level=partial_target_level, partial_share=partial_share)
 
         # The stop-cost decomposition runs AFTER the simulation so a partial
