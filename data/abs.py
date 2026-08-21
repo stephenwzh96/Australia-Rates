@@ -379,9 +379,8 @@ def gross_flows() -> dict[str, list[Observation]]:
     and the parse is half a minute, and both happen once a month.
     """
     period = latest_release(LF_LANDING)
-    key = _cache_key(GROSS_FLOWS, period or "")
 
-    def from_cache() -> dict[str, list[Observation]]:
+    def from_cache(key: str) -> dict[str, list[Observation]]:
         rows: dict[str, list[Observation]] = {}
         for row in cache.read_json(key):
             obs = []
@@ -395,8 +394,21 @@ def gross_flows() -> dict[str, list[Observation]]:
         return rows
 
     if period is None:
-        return from_cache()
-    cached = from_cache()
+        # Offline: the same index-cache fallback `workbook()` uses. Building
+        # the key from `period or ""` here would read "abs-LMS1-", a key
+        # nothing ever writes to (every successful write below is keyed on a
+        # real period string) -- silently returning empty instead of the last
+        # good cache, and with it the Labour tab's job-finding rate going
+        # blank on any network outage even though good data sits on disk.
+        for row in sorted(cache.read_json(f"abs-index-{GROSS_FLOWS}"), reverse=True,
+                          key=lambda r: r.get("period", "")):
+            cached = from_cache(_cache_key(GROSS_FLOWS, row.get("period", "")))
+            if cached:
+                return cached
+        return {}
+
+    key = _cache_key(GROSS_FLOWS, period)
+    cached = from_cache(key)
     if cached:
         return cached
 
@@ -408,6 +420,7 @@ def gross_flows() -> dict[str, list[Observation]]:
         cache.write_json(key, [
             {"h": pair, "o": [[o.date.isoformat(), o.value] for o in obs]}
             for pair, obs in parsed.items()])
+        cache.write_json(f"abs-index-{GROSS_FLOWS}", [{"period": period}])
     return parsed
 
 

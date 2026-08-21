@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -36,8 +38,18 @@ def _read(p: Path) -> dict[str, Any]:
 
 
 def _write(p: Path, data: dict[str, Any]) -> None:
+    """Atomic write -- temp file then replace, the same pattern `data/cache.py`
+    uses, so a crash mid-write or two concurrent Streamlit sessions saving the
+    same meeting can never leave a truncated or interleaved file behind."""
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, p)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def meeting_path(key: str) -> Path:
@@ -65,13 +77,24 @@ def save(key: str, data: dict[str, Any]) -> Path:
 
 
 def load_roster() -> list[dict[str, Any]]:
-    return _read(ROSTER_FILE)["voters"]
+    """The shared voter roster. `load_or_seed` below calls this UNGUARDED on
+    every meeting resolution, so a corrupt or hand-edited `_roster.json` must
+    degrade to an empty roster rather than raising and wedging every rerun --
+    the same failure `load_or_seed`'s own try/except already guards against
+    for a meeting file."""
+    try:
+        return _read(ROSTER_FILE)["voters"]
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return []
 
 
 def load_calendar() -> list[dict[str, Any]] | None:
-    if CALENDAR_FILE.exists():
+    if not CALENDAR_FILE.exists():
+        return None
+    try:
         return _read(CALENDAR_FILE)["meetings"]
-    return None
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return None
 
 
 def save_calendar(meetings: list[dict[str, Any]]) -> None:
