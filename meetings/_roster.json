@@ -1,17 +1,80 @@
 {
-  "as_of": "2026-08-14",
-  "verified": false,
-  "source": "Seat structure from the Reserve Bank Act 1959 s.10A. Names and scores NOT verified.",
-  "note": "TWO THINGS TO KNOW BEFORE TRUSTING THIS TAB. (1) The RBA publishes only an UNATTRIBUTED vote count -- 'the Board decided by six votes to three'. No member is ever named, so unlike the FOMC version of this tool, a roster here can never be scored against a published tally. It encodes your read of the Board, and that read is doing all the work. (2) Every score below is a neutral 2.5 placeholder and every seat past the first two is unfilled, deliberately: this app does not assert policy views for real people it has not sourced. Fill the names from rba.gov.au/about-rba/boards/monetary-policy-board/ and set the scores from each member's own speeches, then flip verified to true. 5 = most hawkish.",
-  "voters": [
-    {"name": "Michele Bullock",  "role": "Governor, Chair",          "bloc": "Executive", "score": 2.5, "is_mover": false, "note": "Score not set -- derive from speeches and press conferences."},
-    {"name": "Andrew Hauser",    "role": "Deputy Governor",          "bloc": "Executive", "score": 2.5, "is_mover": false, "note": "Score not set -- derive from speeches."},
-    {"name": "",                 "role": "Secretary to the Treasury", "bloc": "Ex officio", "score": 2.5, "is_mover": false, "note": "Ex officio seat. Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."},
-    {"name": "",                 "role": "External member",          "bloc": "External",  "score": 2.5, "is_mover": false, "note": "Fill from rba.gov.au."}
-  ]
+ "as_of": "2026-09-29",
+ "verified": true,
+ "source": "Members from rba.gov.au (2 Oct 2026). Scores: the desk's read as at the 29 Sep 2026 decision, sourced in each note; members with no on-record view are placed at the Board's revealed (unanimous) position.",
+ "note": "The RBA publishes only an UNATTRIBUTED vote count, so no score here can be checked against a named vote: each is the desk's read from the member's own on-record remarks (cited in the note), and members who have said nothing on rates sit at the Board's revealed position. Re-mark them from speeches as they come (the Vote count tab's speech roundup writes back). 5 = most hawkish.",
+ "voters": [
+  {
+   "name": "Michele Bullock",
+   "role": "Governor, Chair",
+   "bloc": "Executive",
+   "score": 3.4,
+   "is_mover": false,
+   "note": "Hawkish, data-led. 29 Sep media conference: 'The Board will increase interest rates again if that's what's needed'; unemployment 'a bit tight'; hopes 4.60% is 'restrictive enough'. rba.gov.au/speeches/2026/mc-gov-2026-09-29.html"
+  },
+  {
+   "name": "Andrew Hauser",
+   "role": "Deputy Governor",
+   "bloc": "Executive",
+   "score": 3.8,
+   "is_mover": false,
+   "note": "Most hawkish on the record: inflation the economy's 'one big problem'; rates would rise 'further than otherwise' if expectations slip, 'not at that point yet' (ABC 7.30, 8 Sep 2026). rba.gov.au/speeches/2026/sp-dg-2026-09-08.html"
+  },
+  {
+   "name": "Jenny Wilkinson",
+   "role": "Secretary to the Treasury",
+   "bloc": "Ex officio",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+  },
+  {
+   "name": "Marnie Baker",
+   "role": "External member",
+   "bloc": "External",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+  },
+  {
+   "name": "Melinda Cilento",
+   "role": "External member",
+   "bloc": "External",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "Joined 1 Sep 2026 (ex-CEDA CEO). Public comment on productivity and AI, none on rates; voted in the unanimous 29 Sep hike. Placed at the Board's revealed position."
+  },
+  {
+   "name": "Renée Fry-McKibbin",
+   "role": "External member",
+   "bloc": "External",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+  },
+  {
+   "name": "Carolyn Hewson",
+   "role": "External member",
+   "bloc": "External",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "Credibility-first: 'inflation expectations are better when anchored. Policy credibility is stronger' (speech, 27 May 2026); no rate call. rba.gov.au/speeches/2026/sp-mpb-2026-05-27.html"
+  },
+  {
+   "name": "Bruce Preston",
+   "role": "External member",
+   "bloc": "External",
+   "score": 3.0,
+   "is_mover": false,
+   "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+  },
+  {
+   "name": "Iain Ross",
+   "role": "External member",
+   "bloc": "External",
+   "score": 2.6,
+   "is_mover": false,
+   "note": "Least hawkish on the record: 'little evidence that a self-sustaining wage-price spiral has emerged'; labour market easing towards balance (speech, 22 Sep 2026). Still voted for the 29 Sep hike. rba.gov.au/speeches/2026/sp-mpb-2026-09-22.html"
+  }
+ ]
 }

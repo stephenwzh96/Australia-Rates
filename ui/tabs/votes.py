@@ -196,7 +196,9 @@ def _standing(ctx: Ctx, year: int) -> None:
     C.section("Where the Board sits",
               f"{len(records)} member{'' if len(records) == 1 else 's'} · strongest hawk on top")
 
-    chart_col, bloc_col = st.columns([1.35, 1], gap="large")
+    # Stacked, not side by side: nine portraits, names and a 0-5 axis need the
+    # width, and beside the bloc table the plot collapsed on a laptop screen.
+    chart_col, bloc_col = st.container(), st.container()
     with chart_col:
         if records:
             photos = src.fetch_board_avatars(tuple(sorted(x["name"] for x in records)))
