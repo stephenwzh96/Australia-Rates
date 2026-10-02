@@ -14,7 +14,7 @@ import streamlit as st
 from core import roster as R
 from core import rotation
 from state import store
-from ui import bloc_icons
+from ui import bloc_icons, board
 from ui import charts
 from ui import components as C
 from ui import research
@@ -28,17 +28,8 @@ ACTION_WORD = {"hike": "Hike", "hold": "Hold", "cut": "Cut"}
 def render(ctx: Ctx) -> None:
     S = ctx.S
     year = ctx.M.meeting.end.year
-    rows = R.normalize_roster(S.setdefault("roster", store.load_roster()))
-    # Once per meeting per session: the seating is session state, never written
-    # into the meeting file itself.
-    seated = f"_roster_seated_{ctx.key}"
-    if not st.session_state.get(seated):
-        rows, joined, left = R.seat_board(rows, src.fetch_board())
-        st.session_state[seated] = True
-        st.session_state[f"_board_changes_{ctx.key}"] = (joined, left)
-        if joined or left:
-            mark_dirty()
-    S["roster"] = rows
+    board.seat(S, ctx.key)
+    S["roster"] = R.normalize_roster(S.get("roster") or store.load_roster())
 
     count_band, standing_band, voted_band, roster_band, roundup_band = (
         st.container() for _ in range(5))

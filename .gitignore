@@ -19,3 +19,6 @@ meetings/_manual_series*.json
 
 # Local agent scratch, not project content.
 .workbuddy-ai/
+
+# Per-run backups of billed research (speech roundup, street calls, trade recs).
+meetings/.research_backups/

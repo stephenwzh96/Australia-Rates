@@ -22,7 +22,9 @@ RUNS_DIR = ROOT / "runs"
 ROSTER_FILE = MEETINGS_DIR / "_roster.json"
 CALENDAR_FILE = MEETINGS_DIR / "_calendar.json"
 SPEECH_HISTORY_FILE = MEETINGS_DIR / "_speech_history.json"
+CALL_HISTORY_FILE = MEETINGS_DIR / "_call_history.json"
 RELEASE_CARDS_FILE = MEETINGS_DIR / "_release_cards.json"
+RECS_HISTORY_FILE = MEETINGS_DIR / "_recs_history.json"
 
 # Kept rather than the full history: each entry embeds a whole roundup
 # (sources, quotes, score reads), and a research pass is expensive enough that
@@ -31,6 +33,64 @@ MAX_SPEECH_HISTORY = 10
 
 # Cleared when a meeting is cloned forward.
 _MARKET_INPUTS = ("points", "far_leg_points")
+
+
+_RESEARCH_BACKUP_DIR = MEETINGS_DIR / ".research_backups"
+
+
+def _backup_stamp(record: dict[str, Any]) -> str:
+    """A filename-safe id for one run -- its ISO stamp with the colons taken
+    out, or a wall-clock fallback when a record somehow carries no stamp."""
+    raw = str(record.get("stamp") or clock.stamp())
+    return "".join(c if (c.isalnum() or c in "-T") else "-" for c in raw)
+
+
+def _backup_research_run(kind: str, record: dict[str, Any],
+                         limit: int = MAX_SPEECH_HISTORY) -> None:
+    """Write one run to its own file and prune that kind to the newest
+    `limit`. Never raises -- a backup that fails must not take the real
+    save down with it."""
+    try:
+        _RESEARCH_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        _write(_RESEARCH_BACKUP_DIR / f"{kind}-{_backup_stamp(record)}.json",
+               record)
+        kept = sorted(_RESEARCH_BACKUP_DIR.glob(f"{kind}-*.json"),
+                      key=lambda f: f.stat().st_mtime, reverse=True)
+        for stale in kept[limit:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _restored_research_runs(kind: str) -> list[dict[str, Any]]:
+    """Every backed-up run of `kind`, newest first, best-effort."""
+    out: list[dict[str, Any]] = []
+    try:
+        files = sorted(_RESEARCH_BACKUP_DIR.glob(f"{kind}-*.json"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return out
+    for f in files:
+        try:
+            out.append(_read(f))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _merge_history(primary: list[dict[str, Any]], backups: list[dict[str, Any]],
+                   limit: int) -> list[dict[str, Any]]:
+    """The aggregate file's runs, topped up with any backed-up run it is
+    missing (matched on `stamp`), newest first, capped at `limit`. When the
+    aggregate has been wiped this returns the backups on their own."""
+    seen = {str(r.get("stamp")) for r in primary if r.get("stamp")}
+    merged = list(primary)
+    for r in backups:
+        if str(r.get("stamp")) not in seen:
+            merged.append(r)
+            seen.add(str(r.get("stamp")))
+    merged.sort(key=lambda r: str(r.get("stamp") or ""), reverse=True)
+    return merged[:limit]
 
 
 def _read(p: Path) -> dict[str, Any]:
@@ -410,20 +470,61 @@ def save_run(key: str, markdown: str, stamp: str) -> Path:
 
 def load_speech_history() -> list[dict[str, Any]]:
     """Past speech-summary runs, newest first. `[]` if none have been saved."""
-    if not SPEECH_HISTORY_FILE.exists():
-        return []
-    return _read(SPEECH_HISTORY_FILE).get("runs") or []
+    primary = (_read(SPEECH_HISTORY_FILE).get("runs") or []
+               if SPEECH_HISTORY_FILE.exists() else [])
+    return _merge_history(primary, _restored_research_runs("speech"),
+                          MAX_SPEECH_HISTORY)
 
 
 def save_speech_run(record: dict[str, Any],
                     limit: int = MAX_SPEECH_HISTORY) -> None:
-    """Prepend one completed run and drop anything past `limit`.
+    """Add one completed run and drop anything past `limit`."""
+    _backup_research_run("speech", record, limit)
+    primary = (_read(SPEECH_HISTORY_FILE).get("runs") or []
+               if SPEECH_HISTORY_FILE.exists() else [])
+    runs = _merge_history([record] + primary,
+                          _restored_research_runs("speech"), limit)
+    _write(SPEECH_HISTORY_FILE, {"runs": runs})
 
-    Newest-first by construction -- the caller never has to sort, and the
-    oldest entry is simply whatever falls off the end of the slice.
-    """
-    runs = [record] + load_speech_history()
-    _write(SPEECH_HISTORY_FILE, {"runs": runs[:limit]})
+
+def load_call_history() -> list[dict[str, Any]]:
+    """Past bank-call runs, newest first. `[]` if none have been saved.
+    Rehydrated from the per-run backups, like `load_speech_history`."""
+    primary = (_read(CALL_HISTORY_FILE).get("runs") or []
+               if CALL_HISTORY_FILE.exists() else [])
+    return _merge_history(primary, _restored_research_runs("call"),
+                          MAX_SPEECH_HISTORY)
+
+
+def save_call_run(record: dict[str, Any],
+                  limit: int = MAX_SPEECH_HISTORY) -> None:
+    """Same contract as `save_speech_run`, in its own file."""
+    _backup_research_run("call", record, limit)
+    primary = (_read(CALL_HISTORY_FILE).get("runs") or []
+               if CALL_HISTORY_FILE.exists() else [])
+    runs = _merge_history([record] + primary,
+                          _restored_research_runs("call"), limit)
+    _write(CALL_HISTORY_FILE, {"runs": runs})
+
+
+def load_recs_history() -> list[dict[str, Any]]:
+    """Past trade-rec runs, newest first. `[]` if none have been saved."""
+    primary = (_read(RECS_HISTORY_FILE).get("runs") or []
+               if RECS_HISTORY_FILE.exists() else [])
+    return _merge_history(primary, _restored_research_runs("recs"),
+                          MAX_SPEECH_HISTORY)
+
+
+def save_recs_run(record: dict[str, Any],
+                  limit: int = MAX_SPEECH_HISTORY) -> None:
+    """Same contract as `save_call_run`, in its own file. A run is billed and
+    minutes long, so it is kept like the other research runs."""
+    _backup_research_run("recs", record, limit)
+    primary = (_read(RECS_HISTORY_FILE).get("runs") or []
+               if RECS_HISTORY_FILE.exists() else [])
+    runs = _merge_history([record] + primary,
+                          _restored_research_runs("recs"), limit)
+    _write(RECS_HISTORY_FILE, {"runs": runs})
 
 
 # --------------------------------------------------------------------------

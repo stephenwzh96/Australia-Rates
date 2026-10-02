@@ -19,22 +19,24 @@ import streamlit as st
 from core import clock, rba_calendar
 from state import store
 from ui import components as C
-from ui import sidebar, verdict
+from ui import board, sidebar, verdict
 from ui.context import Ctx, Market
-from ui.tabs import (analysis, curve, data, growth, inflation, labour, macro, path, releases,
-                     sizing, smp, votes)
+from ui.tabs import (analysis, calls, curve, data, growth, inflation, labour, macro, path,
+                     recs, releases, sizing, smp, votes)
 from ui.theme import active as active_palette
 
 st.set_page_config(page_title="RBA event pricing", page_icon="◷", layout="wide")
 C.inject_css(active_palette())
 
 SECTIONS = {
+    "Trade recs": recs.render,
     "Curve": curve.render,
     "Sizing": sizing.render,
     "Path": path.render,
     "Releases": releases.render,
     "Vote count": votes.render,
     "SMP & forecasts": smp.render,
+    "Street calls": calls.render,
     "Macro": macro.render,
     "Labour": labour.render,
     "Inflation": inflation.render,
@@ -57,6 +59,7 @@ def main() -> None:
                 else list(rba_calendar.DEFAULT_MEETINGS))
 
     key, S, as_of = sidebar.render(meetings, today)
+    board.seat(S, key)
     ctx = Ctx(key=key, S=S, as_of=as_of, today=today, P=active_palette(), meetings=meetings,
               market=Market.fetch())
     ctx.rebuild()

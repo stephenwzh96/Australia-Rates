@@ -11,7 +11,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from core import clock, speeches
+from core import bank_calls, clock, pricing, speeches
 from core import roster as R
 from data import agent as claude_agent
 from state import store
@@ -441,3 +441,197 @@ def update_main_table(ctx: Ctx, roundup) -> None:
         S["roster"] = R.apply_roster_updates(S.get("roster", []), final)
         mark_dirty()
         st.rerun()
+
+
+# ---------------------------------------------------------------- bank calls
+
+@st.cache_resource
+def _call_book_cache() -> dict:
+    return {}
+
+
+def fetch_call_book(banks: tuple[str, ...], meeting_date: date, today: date,
+                    backend: str, model: str, timeout: int, retry: int,
+                    _meeting_key: str = "", _on_progress=None):
+    key = (tuple(banks), meeting_date, today, backend, model, timeout, retry,
+           bank_calls.PROMPT_VERSION)
+    cache = _call_book_cache()
+    answered_at, cached = cache.get(key, (0.0, None))
+    if cached is not None and time.monotonic() - answered_at < CACHE_TTL:
+        return cached
+    groups = bank_calls.batches(list(banks))
+    answers = AGENTS[backend].research_many(
+        [bank_calls.prompt(g, meeting_date, today) for g in groups],
+        bank_calls.SYSTEM, model=model or None, timeout=timeout, on_progress=_on_progress)
+    book = bank_calls.book_from_answers(groups, answers, meeting_date, today)
+    if book.ok and book.calls:
+        store.save_call_run({
+            "stamp": clock.stamp(),
+            "meeting": _meeting_key, "meeting_date": meeting_date.isoformat(),
+            "backend": backend, "model": model, "timeout": timeout,
+            "book": bank_calls.book_to_dict(book),
+        })
+        cache[key] = (time.monotonic(), book)
+    else:
+        cache.pop(key, None)
+    return book
+
+
+def _call_history_label(entry: dict) -> str:
+    book = entry.get("book") or {}
+    n = len(book.get("calls") or [])
+    outcome = "search failed" if book.get("error") else f"{n} house{'' if n == 1 else 's'}"
+    if book.get("partial"):
+        outcome += " (partial)"
+    return f"{_stamp(entry, 'unknown time')} · {outcome}{_agent_tail(entry)}"
+
+
+def render_call_book(ctx: Ctx, book) -> None:
+    P = ctx.P
+    if not book.calls:
+        st.info("Nothing sourced came back: the houses have not published for this meeting "
+                "yet, or every row failed validation (see below).")
+    else:
+        _call_summary(ctx, book)
+        _call_table(book, P)
+    if book.changed_calls:
+        _call_changes(book.changed_calls, P)
+    if book.rejected:
+        C.note("Rejected before presenting: " + "; ".join(book.rejected)
+               + ". A thin table is a thin search, not a thin street.")
+
+
+def _call_colour(call: str, P) -> str:
+    return {"hike": P.negative, "cut": P.positive}.get(call, P.muted)
+
+
+def _call_summary(ctx: Ctx, book) -> None:
+    M, P = ctx.M, ctx.P
+    t = bank_calls.tally(book)
+    n = len(book.calls)
+    med6, med12 = bank_calls.median_path(book, "6m"), bank_calls.median_path(book, "12m")
+    spread12 = bank_calls.dispersion(book, "12m")
+    C.board([
+        C.Fig("Houses", f"{n}", f"of {len(bank_calls.BANKS)} searched"),
+        C.Fig("Consensus", bank_calls.consensus_call(book).title(),
+              f"{t['hike']} hike · {t['hold']} hold · {t['cut']} cut"),
+        *[C.Fig(label, "—" if med is None else f"{med * 25:+.0f}bp",
+                "" if med is None else f"{med:+g} moves")
+          for label, med in (("Median 6m path", med6), ("Median 12m path", med12))],
+        C.Fig("Dispersion (12m)", "—" if spread12 is None else f"{spread12} moves",
+              "" if spread12 is None else ("unanimous" if spread12 == 0 else "hawk−dove spread")),
+    ])
+    if M.priced and M.points and M.size and not M.multi_move:
+        strip = pricing.implied_probability(M.points, M.size)
+        movers = t["hike"] + t["cut"]
+        street = movers / n if n else 0.0
+        gap = street - strip
+        tone = P.good if abs(gap) < 0.15 else P.serious
+        st.markdown(
+            f'<div class="fomc-note">Street calls a move <b>{street:.0%}</b> ({movers}/{n} '
+            f'houses) vs the strip pricing <b>{strip:.0%}</b> — a <span style="color:{tone}">'
+            f'{gap:+.0%}</span> gap.</div>', unsafe_allow_html=True)
+
+
+def _call_table(book, P) -> None:
+    rows, colours, bg = [], {}, {}
+    for i, c in enumerate(sorted(book.calls, key=lambda x: x.bank)):
+        rows.append([
+            c.bank + ("  ◆" if c.changed else ""),
+            (f"{c.next_call} {c.next_bp:.0f}bp".replace(".0bp", "bp")
+             if c.next_call != "hold" and c.next_bp else c.next_call),
+            c.path_6m, c.path_12m,
+            f"{c.end_rate:.3f}%" if c.end_rate is not None else "—",
+            f"{c.as_of:%d %b}" if c.as_of else "—",
+        ])
+        colours[(i, 1)] = _call_colour(c.next_call, P)
+        if c.changed:
+            bg[i] = "rgba(250,178,25,0.10)"
+    C.table(["Bank", "This meeting", "6m", "12m", "End-27", "As of"], rows,
+            numeric=(2, 3, 4), colours=colours, row_bg=bg)
+    C.note("6m / 12m are net 25bp moves after this meeting (+ = hikes). End-27 is the cash "
+           "rate the house sees at end-2027. ◆ = revised in the last eight weeks, listed with "
+           "reasons below. Sourced rows only.")
+
+
+def _call_changes(changed, P) -> None:
+    C.sub("What moved")
+    rows, colours = [], {}
+    for i, c in enumerate(changed):
+        rows.append([c.bank, f"{c.prev_call} → {c.next_call}",
+                     f"{c.change_date:%d %b}" if c.change_date else "recent",
+                     c.change_reason or ("no reason given in the source" if c.reason_missing else "—")])
+        colours[(i, 1)] = _call_colour(c.next_call, P)
+    C.table(["Bank", "Move", "When", "Reason"], rows, colours=colours)
+
+
+def bank_call_book(ctx: Ctx) -> None:
+    C.heading("Sell-side calls", f"for {ctx.M.meeting.label}", help=(
+        r"\text{street} - \text{strip} = \text{event risk}",
+        "A research agent searches each house's latest published RBA call — the big four, "
+        "Macquarie, AMP and the global banks' Australian economists: its call for this "
+        "meeting and net 25bp moves over the next six and twelve months. Rows need a dated "
+        "source and pass validation; revisions are listed with the stated reason.",
+        "see core.bank_calls", "bank_calls"))
+
+    history = [h for h in store.load_call_history() if not (h.get("book") or {}).get("error")]
+    # The four dropdowns on one row; the action and what it will do on the next.
+    with C.bar("call_agent"):
+        c_hist, c_agent, c_model, c_time, _ = st.columns([1.35, 1, 1, 0.75, 0.5],
+                                                         vertical_alignment="bottom")
+    with c_hist:
+        view = st.selectbox("History", list(range(len(history) + 1)), key="call_history_view",
+                            width=210, format_func=lambda i: "Live search" if i == 0
+                            else _call_history_label(history[i - 1]))
+    backend, model = agent_picker((c_agent, c_model))
+    with c_time:
+        timeout_min = _run_timeout("call_timeout", width=110)
+
+    if view:
+        entry = history[view - 1]
+        st.info(f"Viewing a saved run from {_stamp(entry, 'an earlier time')}.")
+        render_call_book(ctx, bank_calls.book_from_dict(entry["book"]))
+        return
+
+    ok, why = AGENTS[backend].available()
+    if not ok:
+        agent_blocked(backend, why)
+        return
+
+    meeting_date, today = ctx.M.meeting.end, ctx.M.as_of
+    n_batches = len(bank_calls.batches(list(bank_calls.BANKS)))
+    with C.bar("call_action"):
+        c2, c3 = st.columns([1, 3.1], vertical_alignment="center")
+    with c2:
+        go = st.button("Get latest bank calls", width="content", type="primary", key="call_go")
+    with c3:
+        C.note(f"{len(bank_calls.BANKS)} houses as {n_batches} parallel searches on "
+               f"{LABELS[backend]} ({model}). Runs only on the button.")
+
+    timeout_s = int(timeout_min) * 60
+    retry_n = int(st.session_state.get("call_retry", 0))
+
+    def key_for(rn: int) -> tuple:
+        return (tuple(bank_calls.BANKS), meeting_date, today, backend, model, timeout_s, rn)
+
+    if go:
+        st.session_state["call_key"] = key_for(retry_n)
+    if st.session_state.get("call_key") != key_for(retry_n):
+        # Say what the empty panel is waiting for, rather than leave it blank.
+        saved = (f" or open one of the {len(history)} saved runs from History"
+                 if history else "")
+        st.info(f"No calls pulled for {ctx.M.meeting.label} in this session. Run the search"
+                f"{saved}. Each run is a billed agent search.",
+                icon=":material/travel_explore:")
+        return
+
+    bar, on_progress, t0 = C.progress_clock(n_batches, "batches")
+    with st.spinner(f"Searching bank calls ({LABELS[backend]} · {model})"):
+        book = fetch_call_book(tuple(bank_calls.BANKS), meeting_date, today, backend, model,
+                               timeout_s, retry_n, ctx.key, _on_progress=on_progress)
+    bar.progress(1.0, text=f"{n_batches}/{n_batches} batches — done in "
+                           f"{C.fmt_secs(time.monotonic() - t0)}")
+    if (not book.ok or book.partial) and _retry_controls(
+            backend, book.error or book.partial, "call", retry_n, key_for):
+        return
+    render_call_book(ctx, book)

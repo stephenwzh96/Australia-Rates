@@ -250,7 +250,7 @@ def _print_labels(prior: float) -> list[str]:
     return labels
 
 
-def _street_reads(res) -> tuple[dict | None, list[dict]]:
+def street_reads(res) -> tuple[dict | None, list[dict]]:
     """The street's unemployment-rate consensus from the reaction cards: the
     one for the live print, and every past one that can be scored against
     what printed. A card is matched to a print by its release date."""
@@ -304,7 +304,7 @@ def _street(res, ctx: Ctx) -> None:
     if not L.get("buckets"):
         C.note("No model odds for this print yet.")
         return
-    live, past = _street_reads(res)
+    live, past = street_reads(res)
     prior = L["prior_print"]
     probs = {b: p for _, b, p in L["buckets"]}
     if live is None:

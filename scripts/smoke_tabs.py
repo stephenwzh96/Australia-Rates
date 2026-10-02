@@ -17,7 +17,8 @@ from streamlit.testing.v1 import AppTest
 
 warnings.filterwarnings("ignore")
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
-DEFAULT = ["Curve", "Sizing", "Path", "Releases", "Vote count", "Macro", "Labour",
+DEFAULT = ["Trade recs", "Curve", "Sizing", "Path", "Releases", "Vote count", "SMP & forecasts",
+           "Street calls", "Macro", "Labour", "Growth", "Analysis",
            "Inflation", "Data"]
 
 
