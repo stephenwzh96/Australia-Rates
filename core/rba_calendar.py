@@ -97,6 +97,22 @@ def days_until(meeting: Meeting, today: date) -> int:
     return (meeting.end - today).days
 
 
+def as_of_lag_days(as_of: date, today: date) -> int:
+    """How far the as-of date sits BEHIND today, in days. 0 when it is current
+    or deliberately set ahead."""
+    return max((today - as_of).days, 0)
+
+
+def as_of_note(as_of: date, today: date) -> str:
+    """Chip text for a stale as-of, or "" when there is nothing to say. Every
+    meeting opens on today, so a lag means the as-of was moved back by hand --
+    and it scopes every tab, so it has to be visible."""
+    lag = as_of_lag_days(as_of, today)
+    if not lag:
+        return ""
+    return f"{lag} day behind" if lag == 1 else f"{lag} days behind"
+
+
 # Source: rba.gov.au/schedules-events/board-meeting-schedules.html, fetched
 # 2026-08-14. Monetary Policy Board only -- the Payments System Board sits on
 # its own schedule and decides nothing this app prices.

@@ -15,6 +15,7 @@ CVD band requires.
 
 from __future__ import annotations
 
+import html
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -40,14 +41,66 @@ BAR_RADIUS = 4
 MA_BLUE = "#1f4e8c"
 
 
-# ---------------------------------------------------------------------------
-# Source vintage line
-# ---------------------------------------------------------------------------
-# The terminal's CPI monitor heads every screen with when the number last
-# landed and when the next one is due, which is the pair a pre-meeting reader
-# actually needs: whether what they are looking at is current, and how long it
-# stays the latest word. The same line rides under every Inflation-tab chart
-# title so a stale panel is visible rather than assumed fresh.
+# Width the app renders a two-column panel into (the 1600px container split in
+# half). Only used to size a legend's bottom margin, so an estimate is fine.
+PANEL_WIDTH_PX = 780
+
+# Legend metrics for the horizontal legend parked *under* the plot area.
+# Anchoring it to the plot floor (paper y=0, yanchor="top") drew it straight
+# over the x tick labels; it must hang off the figure floor instead
+# (yref="container", yanchor="bottom"), and the bottom margin has to be tall
+# enough for the rows it wraps to.
+_LEGEND_ROW_PX = 19        # one wrapped row, incl. tracegroupgap
+_LEGEND_SWATCH_PX = 12     # colour chip
+_LEGEND_ITEM_GAP_PX = 13   # gap between entries
+_LEGEND_CHAR_PX = 6.3      # conservative advance width at 11px
+_LEGEND_PAD_PX = 12        # breathing room under the legend
+_X_TICK_PX = 28            # x tick labels sitting under the axis
+_LEGEND_SAFETY = 0.8       # estimate at 80% of the width -> ~1 row spare
+
+
+def legend_rows(names: list[str], width_px: float) -> int:
+    """Rows a horizontal legend wraps to when it is ``width_px`` wide."""
+    if not names:
+        return 0
+    rows, used = 1, 0.0
+    for n in names:
+        w = (_LEGEND_SWATCH_PX + _LEGEND_ITEM_GAP_PX
+             + _LEGEND_CHAR_PX * len(str(n)))
+        if used and used + w > width_px:
+            rows += 1
+            used = w
+        else:
+            used += w
+    return rows
+
+
+def legend_bottom_margin(names: list[str], width_px: float) -> int:
+    """Bottom margin (px) that clears both the x tick labels and the legend.
+
+    Estimated at a fraction of the real width so a narrower browser column
+    wraps into the spare row rather than colliding with the plot.
+    """
+    return int(_X_TICK_PX
+               + legend_rows(names, width_px * _LEGEND_SAFETY) * _LEGEND_ROW_PX
+               + _LEGEND_PAD_PX)
+
+
+def bottom_legend(names: list[str], width_px: float = PANEL_WIDTH_PX
+                  ) -> tuple[dict, int]:
+    """``(legend config, bottom margin px)`` for a horizontal legend under a plot.
+
+    Returned together on purpose: a legend parked below the plot area is only
+    readable if the bottom margin is tall enough for the rows it wraps to, and
+    splitting the two is what let ``inflation_trend`` anchor its legend to the
+    *plot* floor (paper y=0) and draw it over the x tick labels. ``container``
+    + ``yanchor="bottom"`` hangs it off the figure floor instead.
+    """
+    legend = dict(orientation="h", yref="container", y=0.0, x=0.0,
+                  xanchor="left", yanchor="bottom", title=None,
+                  itemsizing="constant", font=dict(size=11), tracegroupgap=4)
+    return legend, legend_bottom_margin(names, width_px)
+
 
 @dataclass(frozen=True)
 class Vintage:
@@ -69,17 +122,11 @@ class Vintage:
 
 def apply_vintage(fig: go.Figure, vintage: "Vintage | None", p: Palette,
                   top_margin: int = 64) -> go.Figure:
-    """Hang a vintage line under a Plotly figure's title, in place.
-
-    A no-op when there is nothing to say, so a chart whose source has never
-    been fetched keeps its original title and spacing instead of reserving
-    room for a blank line.
-    """
+    """Hang a vintage line under a Plotly figure's title, in place."""
     if vintage is None or not vintage.line:
         return fig
     fig.update_layout(
-        title=dict(subtitle=dict(text=vintage.line,
-                                 font=dict(size=11, color=p.ink_secondary))),
+        title=dict(subtitle=dict(text=vintage.line, font=subtitle_font(p))),
         margin=dict(t=top_margin),
     )
     return fig
@@ -87,24 +134,41 @@ def apply_vintage(fig: go.Figure, vintage: "Vintage | None", p: Palette,
 
 def vintage_title(text: str, vintage: "Vintage | None", p: Palette,
                   **params) -> alt.TitleParams:
-    """The Altair equivalent of :func:`apply_vintage`.
-
-    Altair titles carry a native ``subtitle``, so the line rides in the same
-    slot it does on the Plotly charts and the two families read alike. Same
-    degrade rule: an unknown vintage leaves a plain title with no gap under it.
-    """
-    opts: dict = dict(fontSize=12, fontWeight="normal", color=p.ink, dy=-5)
+    """The Altair equivalent of :func:`apply_vintage`."""
+    opts: dict = dict(fontSize=TITLE_SIZE, fontWeight=TITLE_WEIGHT, color=p.ink, dy=-5,
+                      font=FONT, subtitleFont=FONT)
     opts.update(params)
     if vintage is not None and vintage.line:
-        # limit=0 drops the explicit pixel cap, so Vega clamps to the view width
-        # instead of a much smaller default -- without it the line ellipsises to
-        # "Next release: 04 Sep 2026  ·  Last modifie…" inside the half-width GS
-        # panels, losing the date it exists to show. Vega still trims to the
-        # chart box on a genuinely cramped viewport, exactly as the chart TITLES
-        # already do there, so the line can never spill past its own chart.
-        opts.update(subtitle=vintage.line, subtitleColor=p.muted,
-                    subtitleFontSize=10, subtitlePadding=4, limit=0)
+        opts.update(subtitle=vintage.line, subtitleColor=p.ink_secondary,
+                    subtitleFontSize=SUBTITLE_SIZE, subtitlePadding=4, limit=0)
     return alt.TitleParams(text, **opts)
+
+
+#: The app's two typefaces (.streamlit/config.toml). Plotly charts pick the UI
+#: face up from the Streamlit theme; Altair charts render with `theme=None`, so
+#: they name it here or fall back to the browser's default sans.
+FONT = "Archivo, 'Helvetica Neue', Arial, sans-serif"
+FONT_NUM = "'JetBrains Mono', ui-monospace, monospace"
+
+#: One type scale for every chart's own title, whichever library draws it.
+#: The title matches the page's sub-heading (.fomc-h2: 0.86rem of a 15px base,
+#: semibold), so a chart title never shouts over the section heading above it;
+#: the subtitle -- a qualifier, a swatch legend, the vintage line -- sits one
+#: step down in the secondary ink. Charts had drifted to five title sizes
+#: (12, 13, 14, 15 and 17px); `tests/test_chart_type_scale.py` holds them here.
+TITLE_SIZE = 14
+TITLE_WEIGHT = 600
+SUBTITLE_SIZE = 11
+
+
+def title_font(p: Palette) -> dict:
+    """A Plotly chart title's font."""
+    return dict(size=TITLE_SIZE, color=p.ink, weight=TITLE_WEIGHT)
+
+
+def subtitle_font(p: Palette) -> dict:
+    """A Plotly chart subtitle's font."""
+    return dict(size=SUBTITLE_SIZE, color=p.ink_secondary)
 
 
 def _base(p: Palette) -> dict:
@@ -114,13 +178,15 @@ def _base(p: Palette) -> dict:
             "view": {"stroke": "transparent"},
             "axis": {
                 "labelColor": p.muted, "titleColor": p.muted,
+                "labelFont": FONT, "titleFont": FONT,
                 "labelFontSize": 10, "titleFontSize": 10, "titleFontWeight": "normal",
                 "gridColor": p.grid, "gridWidth": 1, "domainColor": p.baseline,
                 "tickColor": p.baseline, "labelFlush": True,
             },
             "legend": {"labelColor": p.ink_secondary, "titleColor": p.muted,
+                       "labelFont": FONT, "titleFont": FONT,
                        "labelFontSize": 10, "titleFontSize": 10},
-            "text": {"color": p.ink_secondary, "fontSize": 10},
+            "text": {"color": p.ink_secondary, "fontSize": 10, "font": FONT},
         }
     }
 
@@ -128,10 +194,6 @@ def _base(p: Palette) -> dict:
 def _apply(chart: alt.Chart, p: Palette, height: int) -> alt.Chart:
     cfg = _base(p)["config"]
     if isinstance(chart, (alt.VConcatChart, alt.HConcatChart, alt.ConcatChart)):
-        # Concat charts reject a top-level `height`/`width` property -- those
-        # live on each sub-chart instead. The main chart's height is set where
-        # it is built and every leaf already carries a responsive width, so we
-        # only apply the theme configs here.
         return (
             chart
             .configure_view(**cfg["view"])
@@ -139,16 +201,18 @@ def _apply(chart: alt.Chart, p: Palette, height: int) -> alt.Chart:
             .configure_legend(**cfg["legend"])
             .configure_text(**cfg["text"])
         )
+    from altair.utils.schemapi import UndefinedType as _Undef
+    existing = ({} if isinstance(chart.config, _Undef)
+                else chart.config.to_dict())
+    merged_view = {**existing.get("view", {}), **cfg["view"]}
     return (
         chart.properties(height=height, width="container")
-        .configure_view(**cfg["view"])
+        .configure_view(**merged_view)
         .configure_axis(**cfg["axis"])
         .configure_legend(**cfg["legend"])
         .configure_text(**cfg["text"])
     )
 
-
-# --------------------------------------------------------------------------
 
 def ev_curve(points: float, size: float, q: float, side: Side, p: Palette,
              height: int = 210) -> alt.LayerChart:

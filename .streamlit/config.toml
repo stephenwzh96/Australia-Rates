@@ -1,5 +1,57 @@
-[server]
-headless = true
-port = 8501
 [browser]
 gatherUsageStats = false
+
+[server]
+headless = true
+
+[runner]
+magicEnabled = false
+
+[client]
+# No Deploy button or developer menu on a desk tool: the settings menu (theme,
+# rerun) stays, everything else is chrome that costs a row of screen.
+toolbarMode = "viewer"
+
+# ---------------------------------------------------------------- the desk
+# One typeface for words (Archivo, a slightly narrow grotesque that sets dense
+# labels without squeezing) and one for figures (JetBrains Mono, so every
+# number on the page lines up in columns). Amber is the single selection
+# colour: red and blue are reserved for losses/gains and hawkish/dovish, so a
+# selected tab or a slider must not borrow either.
+[theme]
+font = "Archivo:https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap, sans-serif"
+headingFont = "Archivo:https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap, sans-serif"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap, monospace"
+baseFontSize = 15
+baseRadius = "0.35rem"
+showWidgetBorder = true
+
+[theme.dark]
+primaryColor = "#f0a53a"
+backgroundColor = "#0c0d0f"
+secondaryBackgroundColor = "#16181c"
+textColor = "#e7e5e0"
+borderColor = "#262a30"
+linkColor = "#f0a53a"
+codeBackgroundColor = "#16181c"
+
+[theme.dark.sidebar]
+backgroundColor = "#111215"
+secondaryBackgroundColor = "#1a1c21"
+textColor = "#e7e5e0"
+borderColor = "#262a30"
+
+[theme.light]
+primaryColor = "#b86e00"
+backgroundColor = "#fbfaf7"
+secondaryBackgroundColor = "#f0eee8"
+textColor = "#16181c"
+borderColor = "#dcd9d0"
+linkColor = "#9a5c00"
+codeBackgroundColor = "#f0eee8"
+
+[theme.light.sidebar]
+backgroundColor = "#f4f2ec"
+secondaryBackgroundColor = "#e8e5dd"
+textColor = "#16181c"
+borderColor = "#dcd9d0"

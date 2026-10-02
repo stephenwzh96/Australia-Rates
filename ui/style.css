@@ -1,211 +1,522 @@
-/* Compact, elegant chrome. Everything here is layout and density --
-   colour lives in ui/theme.py so the palette stays validated in one place. */
+/* ==========================================================================
+   The desk.
 
-.block-container {
-  padding-top: 1.6rem;
-  padding-bottom: 2.5rem;
-  max-width: 1500px;
+   A dark-first trading screen: one page colour that every chart sits flush on,
+   hairlines for structure instead of boxes, Archivo for words and JetBrains
+   Mono for every figure so columns of numbers align. Amber (--fomc-select) is
+   the only selection colour; red and blue stay reserved for what they mean in
+   the charts -- losses and gains, hawkish and dovish.
+
+   --fomc-* variables are written by `ui.components.inject_css` from the
+   active palette (ui/theme.py), so they follow the viewer's light/dark choice.
+   ========================================================================== */
+
+:root {
+  --fomc-num: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --fomc-sans: Archivo, "Helvetica Neue", Arial, sans-serif;
+  --fomc-hair: color-mix(in srgb, currentColor 11%, transparent);
+  --fomc-hair-strong: color-mix(in srgb, currentColor 20%, transparent);
+  --fomc-topbar-h: 5.4rem;   /* room for a tape that wraps to two lines */
+  /* Headline figures (quote board, st.metric, labelled metrics): one compact
+     scale, sized against the 0.8rem tables they sit over -- the figure a step
+     above the table, not a headline over it. */
+  --fomc-fig-label: 0.62rem;
+  --fomc-fig-value: 1rem;
+  --fomc-fig-sub: 0.68rem;
 }
 
-/* Tighter, quieter headings */
-h1, h2, h3 { letter-spacing: -0.015em; font-weight: 600; }
-h1 { font-size: 1.45rem !important; margin-bottom: 0.1rem !important; }
-h2 { font-size: 1.05rem !important; margin: 0.9rem 0 0.3rem !important; }
-h3 { font-size: 0.9rem  !important; margin: 0.7rem 0 0.25rem !important; }
+/* ---------------------------------------------------------------- shell */
 
-/* Every figure aligns vertically */
+/* Streamlit's own header is a transparent overlay; only its menu remains. */
+[data-testid="stHeader"] { background: transparent; height: 2.6rem; }
+[data-testid="stToolbar"] { right: 0.6rem; top: 0.35rem; }
+
+.block-container {
+  padding: 0.7rem 1.35rem 1.4rem 1.35rem;
+  max-width: 2240px;
+}
+
+[data-testid="stVerticalBlock"] { gap: 0.4rem; }
+[data-testid="stVerticalBlockBorderWrapper"] { padding-top: 0.5rem; }
+/* One gap between neighbours on a row, everywhere: Streamlit's own gap
+   argument (small / medium / large) varies it call by call. */
+[data-testid="stHorizontalBlock"] { gap: 0.6rem !important; }
+[data-testid="stMarkdownContainer"] { margin-bottom: 0; }
+[data-testid="element-container"] { margin-bottom: 0.1rem; }
+/* A column may shrink below its content's width: a wide table then scrolls
+   inside its own column (.fomc-scroll) instead of sliding under the rail. */
+[data-testid="stColumn"] { min-width: 0; }
+
+/* Alerts speak the desk's language, not Streamlit's: its info box is blue and
+   its error box red, and here blue and red mean dovish / hawkish and gain /
+   loss. A message is a hairline rule in its own tone over a faint wash of it
+   -- muted for information, amber-brown for a warning, red only for a real
+   failure -- with the text in the page's ink. */
+.stAlert { padding: 0.25rem 0 !important; }
+[data-testid="stAlertContainer"] {
+  --fomc-tone: var(--fomc-muted);
+  background: color-mix(in srgb, var(--fomc-tone) 7%, transparent) !important;
+  border: none !important; border-left: 2px solid var(--fomc-tone) !important;
+  border-radius: 0 4px 4px 0 !important;
+  padding: 0.5rem 0.8rem 0.5rem 0.75rem !important;
+}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) { --fomc-tone: var(--fomc-warn); }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) { --fomc-tone: var(--fomc-crit); }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) { --fomc-tone: var(--fomc-good); }
+[data-testid^="stAlertContent"] { color: var(--fomc-ink, inherit) !important; }
+[data-testid^="stAlertContent"] p { font-size: 0.8rem; line-height: 1.5; color: inherit !important; }
+[data-testid^="stAlertContent"] [data-testid="stAlertDynamicIcon"],
+[data-testid^="stAlertContent"] [data-testid="stIconMaterial"],
+[data-testid^="stAlertContent"] [data-testid="stIconEmoji"] {
+  color: var(--fomc-tone) !important; font-size: 1.05rem;
+}
+
+h1, h2, h3, h4 { letter-spacing: -0.01em; font-weight: 600; font-stretch: 94%; }
+h1 { font-size: 1.3rem  !important; margin-bottom: 0.1rem !important; }
+h2 { font-size: 1rem    !important; margin: 0.7rem 0 0.25rem !important; }
+h3 { font-size: 0.88rem !important; margin: 0.55rem 0 0.2rem !important; }
+h4 { font-size: 0.8rem  !important; margin: 0.5rem 0 0.15rem !important; }
+
+/* ---------------------------------------------------- the sticky top bar */
+
+.st-key-topbar {
+  position: sticky; top: 0; z-index: 990;
+  background: var(--fomc-bg, transparent);
+  margin: -0.7rem -1.35rem 0.35rem;
+  padding: 0.55rem 1.35rem 0;
+  border-bottom: 1px solid var(--fomc-rule, var(--fomc-hair-strong));
+  gap: 0.35rem !important;
+}
+/* Leave room for Streamlit's menu and its "Stop" running indicator, which
+   float over the top-right corner. */
+.st-key-topbar .fomc-tape { padding-right: 6.5rem; }
+
+/* The tape: meeting · countdown · facts … figures */
+.fomc-tape {
+  display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 0.25rem 0.9rem; min-height: 1.6rem;
+  font-size: 0.8rem; line-height: 1.35;
+}
+.fomc-tape-event {
+  font-weight: 700; font-size: 0.86rem; letter-spacing: 0.06em;
+  text-transform: uppercase; font-stretch: 88%;
+}
+.fomc-tape-count {
+  font-family: var(--fomc-num); font-size: 0.8rem; font-weight: 600;
+  padding: 0.05rem 0.4rem; border-radius: 3px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.fomc-tape-facts { display: inline-flex; flex-wrap: wrap; gap: 0 0.75rem; color: var(--fomc-ink2, inherit); }
+.fomc-tape-fact { white-space: nowrap; font-size: 0.78rem; }
+.fomc-tape-fact + .fomc-tape-fact::before {
+  content: ""; display: inline-block; width: 1px; height: 0.8em; margin-right: 0.75rem;
+  background: var(--fomc-hair-strong); vertical-align: -0.05em;
+}
+.fomc-tape-figs {
+  margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 0 1.05rem;
+  align-items: baseline;
+}
+.fomc-tape-fig { display: inline-flex; align-items: baseline; gap: 0.35rem; white-space: nowrap; }
+.fomc-tape-fig .l {
+  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--fomc-muted, inherit);
+}
+.fomc-tape-fig .v { font-family: var(--fomc-num); font-size: 0.86rem; font-weight: 600; }
+
+/* ------------------------------------------------- the control standard
+
+   Every control in the main pane, so a row of them reads as one strip:
+   * one height, 30px -- inputs, dropdowns, dates, buttons and the segmented
+     switches share their tops and bottoms;
+   * one label voice -- the figure boards' small caps -- with the "?" right
+     beside its label, not flung to the column's far edge;
+   * number boxes as compact figures: right-aligned, no +/- steppers.
+   Rows that belong together sit in a container keyed "bar_..." (components
+   `bar`): each column is as wide as its control and the row gap is the only
+   space between them, at any window width. */
+
+[data-testid="stMain"] :is([data-testid="stSelectbox"], [data-testid="stNumberInput"],
+  [data-testid="stTextInput"], [data-testid="stDateInput"], [data-testid="stMultiSelect"],
+  [data-testid="stButtonGroup"], [data-testid="stSlider"], [data-testid="stTextArea"])
+  [data-testid="stWidgetLabel"] {
+  justify-content: flex-start !important; gap: 0.3rem; width: auto !important;
+  min-height: 0 !important; margin-bottom: 0.15rem;
+}
+[data-testid="stMain"] :is([data-testid="stSelectbox"], [data-testid="stNumberInput"],
+  [data-testid="stTextInput"], [data-testid="stDateInput"], [data-testid="stMultiSelect"],
+  [data-testid="stButtonGroup"], [data-testid="stSlider"], [data-testid="stTextArea"])
+  [data-testid="stWidgetLabel"] p {
+  font-size: var(--fomc-fig-label) !important; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.09em; color: var(--fomc-muted, inherit); line-height: 1.3;
+}
+
+[data-testid="stMain"] [data-testid="stNumberInputContainer"] {
+  height: 30px !important; min-height: 30px !important;
+}
+[data-testid="stMain"] [data-testid="stNumberInputField"] {
+  height: 100% !important; padding-top: 0 !important; padding-bottom: 0 !important;
+  text-align: right; padding-right: 0.6rem !important; font-size: 0.84rem;
+}
+[data-testid="stMain"] [data-testid="stNumberInputStepUp"],
+[data-testid="stMain"] [data-testid="stNumberInputStepDown"] { display: none !important; }
+
+[data-testid="stMain"] :is([data-testid="stTextInput"], [data-testid="stDateInput"])
+  [data-baseweb="input"] { height: 30px !important; min-height: 30px !important; }
+[data-testid="stMain"] :is([data-testid="stTextInput"], [data-testid="stDateInput"]) input {
+  padding-top: 0 !important; padding-bottom: 0 !important; font-size: 0.84rem;
+}
+
+/* Streamlit 1.60's dropdown: the widget's own div > a box holding the text
+   input and the chevron button (no "baseweb select" any more). */
+[data-testid="stMain"] [data-testid="stSelectbox"] > div > div {
+  min-height: 30px !important; height: 30px !important;
+}
+[data-testid="stMain"] [data-testid="stSelectbox"] > div > div > :is(input, button) {
+  height: 28px !important; min-height: 0 !important;
+  padding-top: 0 !important; padding-bottom: 0 !important;
+}
+[data-testid="stMain"] [data-testid="stSelectbox"] > div > div > input { font-size: 0.84rem; }
+[data-testid="stMain"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+  min-height: 30px !important;
+}
+
+[data-testid="stMain"] :is(.stButton, .stDownloadButton) button {
+  height: 30px !important; min-height: 30px !important;
+  padding-top: 0 !important; padding-bottom: 0 !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] button { min-height: 30px; }
+
+[class*="st-key-bar_"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+  flex: 0 0 auto !important; width: auto !important; min-width: 0 !important;
+}
+[class*="st-key-bar_"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {
+  flex: 1 1 auto !important;
+}
+[class*="st-key-bar_"] [data-testid="stButtonGroup"] [role="radiogroup"],
+[class*="st-key-bar_"] [data-testid="stButtonGroup"] > div:last-child { flex-wrap: nowrap !important; }
+
+
+/* The section bar: a flat tab strip, amber underline on the open tab. */
+.st-key-section [data-testid="stButtonGroup"] { gap: 0 !important; flex-wrap: wrap; }
+.st-key-section [data-testid="stButtonGroup"] button {
+  border: none !important; border-radius: 0 !important;
+  background: transparent !important; box-shadow: inset 0 -2px 0 transparent !important;
+  font-size: 0.82rem; font-weight: 500; padding: 0.3rem 0.78rem 0.4rem;
+  min-height: 2rem; color: var(--fomc-ink2, inherit) !important;
+  transition: color 120ms ease, box-shadow 120ms ease;
+}
+.st-key-section [data-testid="stButtonGroup"] button p { color: inherit !important; }
+.st-key-section [data-testid="stButtonGroup"] button:hover { color: var(--fomc-ink, inherit) !important; }
+.st-key-section [data-testid="stButtonGroup"] button[aria-checked="true"] {
+  color: var(--fomc-select) !important; font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--fomc-select) !important;
+}
+
+/* Every other segmented control: compact. */
+[data-testid="stButtonGroup"] button { font-size: 0.76rem; padding: 0.12rem 0.55rem; min-height: 1.75rem; }
+
+/* -------------------------------------------------- the verdict rail */
+
+/* The rail stays in view while a long tab scrolls under it. */
+[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-verdict) {
+  align-items: flex-start;
+}
+[data-testid="stColumn"]:has(.st-key-verdict) {
+  position: sticky; top: calc(var(--fomc-topbar-h) + 0.4rem);
+  max-height: calc(100vh - var(--fomc-topbar-h) - 1rem);
+  overflow-y: auto; scrollbar-width: thin;
+}
+.st-key-verdict, .st-key-verdict [data-testid="stVerticalBlockBorderWrapper"] {
+  border-radius: 6px;
+}
+.st-key-verdict {
+  border-color: var(--fomc-rule) !important;
+  background: color-mix(in srgb, currentColor 2.5%, transparent);
+}
+
+.fomc-verdict-row {
+  display: flex; justify-content: space-between; gap: 0.6rem;
+  font-size: 0.8rem; padding: 0.17rem 0; line-height: 1.35;
+  border-bottom: 1px solid var(--fomc-hair);
+}
+.fomc-verdict-row .k {
+  color: var(--fomc-ink2, inherit); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; flex: 0 0 auto; max-width: 58%; min-width: 0;
+}
+.fomc-verdict-row .v {
+  text-align: right; font-weight: 500;
+  flex: 1 1 0; min-width: 0; white-space: normal; overflow-wrap: anywhere;
+}
+/* Figures in the numeric face; words that merely contain numbers stay in the
+   text face (`ui.components.is_figure`). */
+.fomc-verdict-row .v.num { font-family: var(--fomc-num); font-size: 0.93em; letter-spacing: -0.02em; }
+.fomc-verdict-row .v:empty { display: none; }
+.fomc-verdict-row .k:has(+ .v:empty) { max-width: none; }
+.fomc-verdict-row.emph .k { color: inherit; font-weight: 600; }
+.fomc-verdict-row.emph .v { font-weight: 700; }
+
+.fomc-verdict-sec {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fomc-muted, inherit);
+  margin: 0.6rem 0 0.1rem; padding-top: 0.45rem;
+  border-top: 1px solid var(--fomc-hair-strong);
+}
+.fomc-verdict-sec:first-of-type { border-top: none; margin-top: 0.2rem; padding-top: 0; }
+
+/* ------------------------------------------------------------ headings */
+
+.fomc-h {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.15rem 0.6rem;
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.09em;
+}
+.fomc-h::before {
+  content: ""; width: 3px; height: 0.85em; align-self: center; flex: none;
+  background: var(--fomc-select); border-radius: 1px;
+}
+.fomc-h::after {
+  content: ""; flex: 1 1 auto; height: 1px; align-self: center;
+  background: var(--fomc-hair);
+}
+/* The label never breaks: beside a window control the column is narrow, and a
+   squeezed flex row split "SEQUENTIAL CORE INFLATION / TREND" over two lines.
+   The qualifier gives way instead -- but only down to a readable measure.
+   Allowed to shrink to nothing, it stacked one word per line ("month- / over-
+   / month / %") and dragged the amber tick down to the middle of the stack;
+   now, short of 13rem, it drops to a line of its own under the label. */
+.fomc-h-t { white-space: nowrap; flex: none; }
+.fomc-h-sub {
+  text-transform: none; letter-spacing: 0; font-weight: 400;
+  font-size: 0.76rem; color: var(--fomc-muted, inherit);
+  flex: 0 1 auto; min-width: min(13rem, 100%);
+}
+.fomc-h2 {
+  display: flex; align-items: baseline; gap: 0.1rem 0.5rem; flex-wrap: wrap;
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.86rem; font-weight: 600; letter-spacing: -0.005em;
+}
+
+hr, [data-testid="stDivider"] { margin: 0.6rem 0 !important; opacity: 0.5; }
+
+/* ------------------------------------------------------------- figures */
+
 [data-testid="stMetricValue"],
 [data-testid="stMetricDelta"],
 .stDataFrame, .fomc-num, table, code {
   font-variant-numeric: tabular-nums;
 }
-[data-testid="stMetricValue"] { font-size: 1.35rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.72rem !important; opacity: 0.72; }
-[data-testid="stMetric"] { padding: 0.1rem 0 0.2rem; }
+[data-testid="stMetric"] { padding: 0.05rem 0 0.1rem; }
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p {
+  font-size: var(--fomc-fig-label) !important; font-weight: 600 !important;
+  text-transform: uppercase; letter-spacing: 0.09em; color: var(--fomc-muted, inherit);
+}
+[data-testid="stMetricLabel"] { min-height: 0 !important; }
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] > div {
+  font-family: var(--fomc-num); font-size: var(--fomc-fig-value) !important;
+  font-weight: 600; letter-spacing: -0.02em; line-height: 1.3 !important;
+}
+/* Streamlit draws every delta as a coloured pill with an arrow. Here most
+   "deltas" are context (the month of a peak, how many series), not moves, and
+   an arrow would read as direction: the arrow goes, the text stays quiet. */
+[data-testid="stMetricDelta"] {
+  background: transparent !important; padding: 0 !important;
+  font-size: var(--fomc-fig-sub) !important; color: var(--fomc-ink2, inherit) !important;
+}
+[data-testid="stMetricDelta"] svg { display: none !important; }
 
-/* Section selector: smaller, denser */
-[data-testid="stSegmentedControl"] button { font-size: 0.78rem; padding: 0.15rem 0.6rem; }
-[data-testid="stSegmentedControl"] { margin-bottom: 0.35rem; }
+.fomc-num { font-family: var(--fomc-num); letter-spacing: -0.02em; }
 
-/* Hairlines instead of boxes */
-hr, [data-testid="stDivider"] { margin: 0.55rem 0 !important; opacity: 0.45; }
+/* ------------------------------------------------------------ chips */
 
-/* The one bordered surface in the app */
-.fomc-verdict [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 10px; }
-
-/* Header strip chips */
-.fomc-strip { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;
-              margin: 0.15rem 0 0.55rem; }
+.fomc-strip { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center;
+              margin: 0.15rem 0 0.45rem; }
 .fomc-chip {
-  font-size: 0.7rem; line-height: 1.55; padding: 0.05rem 0.5rem;
-  border-radius: 999px; border: 1px solid currentColor;
-  opacity: 0.9; white-space: nowrap;
+  font-size: 0.72rem; line-height: 1.5; padding: 0.02rem 0.45rem;
+  border-radius: 3px; border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  white-space: nowrap;
 }
 
-/* The "?" formula control -- matched to Streamlit's own native `help=` icon
-   (transparent, borderless, 16px, muted stroke-colour text) rather than a
-   filled button chip, so a formula popover and a plain tooltip icon read as
-   the same visual language everywhere they sit side by side.
-   Targeted globally: every popover in this app is a formula help. */
+/* ------------------------------------------------------------ popovers */
+
 [data-testid="stPopoverButton"] {
   min-height: 1rem !important; height: 1rem !important;
   min-width: 1rem  !important; width: 1rem  !important;
   padding: 0 !important; border-radius: 999px !important;
-  background: transparent !important; border: none !important; box-shadow: none !important;
-  opacity: 0.55;
+  background: transparent !important; border: 1px solid var(--fomc-hair-strong) !important;
+  box-shadow: none !important; opacity: 0.6;
   display: inline-flex !important; align-items: center; justify-content: center;
 }
 [data-testid="stPopoverButton"]:hover,
-[data-testid="stPopoverButton"][aria-expanded="true"] { opacity: 1; background: transparent !important; }
-/* the built-in chevron has no place next to a bare "?" */
+[data-testid="stPopoverButton"][aria-expanded="true"] {
+  opacity: 1; border-color: var(--fomc-select) !important; color: var(--fomc-select);
+}
 [data-testid="stPopoverButton"] [data-testid="stIconMaterial"] { display: none !important; }
-[data-testid="stPopoverButton"] p { font-size: 0.72rem; line-height: 1; font-weight: 600; }
-[data-testid="stPopoverBody"] { min-width: 21rem; }
-[data-testid="stPopoverBody"] [data-testid="stCode"] { font-size: 0.72rem; }
+[data-testid="stPopoverButton"] p { font-size: 0.66rem; line-height: 1; font-weight: 700; }
+[data-testid="stPopoverBody"] { min-width: 22rem; }
+[data-testid="stPopoverBody"] [data-testid="stCode"] { font-size: 0.74rem; }
 
-/* Label + ? on one baseline */
-.fomc-label { font-size: 0.72rem; opacity: 0.72; margin-bottom: -0.35rem; }
+.fomc-label { font-size: var(--fomc-fig-label); font-weight: 600; text-transform: uppercase;
+               letter-spacing: 0.09em; color: var(--fomc-muted, inherit); margin-bottom: -0.3rem; }
+.fomc-lm-v { font-family: var(--fomc-num); font-size: var(--fomc-fig-value); font-weight: 600;
+             letter-spacing: -0.02em; line-height: 1.5; }
 
-/* Compact tables */
+/* ------------------------------------------------------------ stat rows */
+
+.fomc-stat-row { display: flex; align-items: baseline; flex-wrap: wrap;
+                 gap: 0.9rem; margin: 0.35rem 0 0.2rem; }
+.fomc-stat { display: inline-flex; align-items: baseline; gap: 0.4rem; }
+.fomc-stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+                   color: var(--fomc-muted, inherit); }
+.fomc-stat-value { font-family: var(--fomc-num); font-size: 0.9rem; font-weight: 600;
+                   font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.fomc-stat-div { width: 1px; align-self: stretch; background: var(--fomc-hair-strong); }
+
+/* The quote board (components.board): a panel's headline figures packed left
+   on one line with a hairline between them, read like a quote screen rather
+   than spread across columns with the gaps doing the talking. */
+.fomc-board { display: flex; flex-wrap: wrap; align-items: stretch; row-gap: 0.45rem;
+              margin: 0.3rem 0 0.55rem; }
+.fomc-fig { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0;
+            padding-right: 1.1rem; margin-right: 1.1rem;
+            border-right: 1px solid var(--fomc-hair-strong); }
+.fomc-fig:last-child { border-right: none; margin-right: 0; padding-right: 0; }
+.fomc-fig-l { font-size: var(--fomc-fig-label); font-weight: 600; text-transform: uppercase;
+              letter-spacing: 0.09em; color: var(--fomc-muted, inherit); white-space: nowrap; }
+.fomc-fig-l[title] { cursor: help; text-decoration: underline dotted;
+                     text-decoration-color: var(--fomc-hair-strong); text-underline-offset: 3px; }
+.fomc-fig-v { font-family: var(--fomc-num); font-size: var(--fomc-fig-value); font-weight: 600;
+              letter-spacing: -0.02em; line-height: 1.3; white-space: nowrap;
+              font-variant-numeric: tabular-nums; }
+.fomc-fig-s { font-size: var(--fomc-fig-sub); color: var(--fomc-ink2, inherit); white-space: nowrap; }
+
+/* Labelled paragraphs in columns (components.reads): the table's header
+   rule and eyebrow type, but cells that wrap, top-aligned, equal width. */
+.fomc-reads { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+              gap: 0.4rem 1.4rem; margin: 0.5rem 0 0.45rem; }
+.fomc-read { border-top: 1px solid var(--fomc-hair-strong); padding-top: 0.3rem; min-width: 0; }
+.fomc-read-label { font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+                   letter-spacing: 0.07em; color: var(--fomc-muted, inherit); }
+.fomc-read p { font-size: 0.8rem; line-height: 1.5; margin: 0.2rem 0 0; }
+
+/* --------------------------------------------------------------- tables */
+
 .fomc-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 .fomc-table th {
-  text-align: left; font-weight: 500; font-size: 0.68rem;
-  text-transform: uppercase; letter-spacing: 0.04em;
-  opacity: 0.6; padding: 0.2rem 0.55rem 0.2rem 0; border-bottom: 1px solid;
-  border-color: color-mix(in srgb, currentColor 18%, transparent);
+  text-align: left; font-weight: 600; font-size: 0.66rem;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--fomc-muted, inherit); padding: 0.22rem 0.55rem 0.22rem 0;
+  border-bottom: 1px solid var(--fomc-hair-strong);
 }
 .fomc-table td {
-  padding: 0.22rem 0.55rem 0.22rem 0; font-variant-numeric: tabular-nums;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+  padding: 0.2rem 0.55rem 0.2rem 0; font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid var(--fomc-hair);
 }
+.fomc-table tbody tr:hover td { background: color-mix(in srgb, currentColor 4%, transparent); }
 .fomc-table td.n, .fomc-table th.n { text-align: right; padding-right: 0; }
-/* ...but only where it IS last. A right-aligned figure followed by a text
-   column has nothing between them, so "4.4283%" and "Jun 2026" render as
-   "4.4283%Jun 2026". The flush-right treatment above is for a trailing numeric
-   column; anywhere else the gutter has to come back. */
-.fomc-table td.n:not(:last-child), .fomc-table th.n:not(:last-child) {
-  padding-right: 0.55rem;
-}
+.fomc-table td.n { font-family: var(--fomc-num); font-size: 0.92em; letter-spacing: -0.02em; }
+/* Two figure columns side by side must never touch: a numeric cell always
+   keeps clear air on its left, whatever its neighbour is. */
+.fomc-table td.n, .fomc-table th.n { padding-left: 0.6rem; }
+.fomc-table td.n:has(+ td:not(.n)) { padding-right: 0.55rem; }
+.fomc-table th.n:has(+ th:not(.n)) { padding-right: 0.55rem; }
 .fomc-table tr.mark td { font-weight: 600; }
+.fomc-table tr.mark td:first-child { box-shadow: inset 2px 0 0 var(--fomc-select); }
 .fomc-table tr.mark td:first-child::before { content: "▸ "; opacity: 0.55; }
-/* A row_bg tint is a background on <tr>, but <td> has no background of its
-   own to hide it -- padding the tint out to the row edges (and rounding the
-   very first/last cell) is what makes it read as one coloured band per row
-   instead of a coloured rectangle only where the text sits. */
-.fomc-table td:first-child { border-radius: 4px 0 0 4px; padding-left: 0.4rem; }
-.fomc-table td:last-child { border-radius: 0 4px 4px 0; }
+.fomc-table td:first-child { border-radius: 3px 0 0 3px; padding-left: 0.4rem; }
+/* The row's name is what the eye scans down: it keeps to one line and the
+   other columns give way, rather than every row doubling in height. */
+.fomc-table td:first-child { white-space: nowrap; }
+.fomc-table td:last-child { border-radius: 0 3px 3px 0; }
 
-/* Reference tables: one line per cell, scrolling sideways in their own box
-   rather than wrapping. A wrapped series id or transform doubles the row
-   height and destroys column scanning, and these rows are lookups, not prose.
-   The scroll is scoped to the wrapper so the page never scrolls with it. */
 .fomc-scroll { overflow-x: auto; max-width: 100%; }
 .fomc-table.nowrap { width: auto; min-width: 100%; }
 .fomc-table.nowrap th, .fomc-table.nowrap td { white-space: nowrap; }
-/* The last column would otherwise sit flush against the scroll edge. */
 .fomc-table.nowrap th:last-child, .fomc-table.nowrap td:last-child { padding-right: 0.4rem; }
 
-/* Sector wage-growth heatmap (HTML table): shares the compact-table look,
-   with a fixed right-aligned share column, an indented component column and
-   coloured month cells with no gaps -- a table, like the source chart. */
 .fomc-heatmap {
   width: 100%; border-collapse: separate; border-spacing: 0;
   font-size: 0.78rem; font-variant-numeric: tabular-nums;
   margin: 0.35rem 0 0.15rem;
 }
 .fomc-heatmap th {
-  font-weight: 500; font-size: 0.66rem; text-transform: uppercase;
-  letter-spacing: 0.04em; opacity: 0.62; padding: 0.25rem 0.3rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  font-weight: 600; font-size: 0.66rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--fomc-muted, inherit); padding: 0.25rem 0.3rem;
+  border-bottom: 1px solid var(--fomc-hair-strong);
   white-space: nowrap;
 }
 .fomc-heatmap th.sh { text-align: right; }
 .fomc-heatmap th.nm { text-align: left; }
 .fomc-heatmap th.h { text-align: center; }
-.fomc-heatmap td { padding: 0.22rem 0.3rem; }
+.fomc-heatmap td { padding: 0.2rem 0.3rem; }
 .fomc-heatmap td.sh {
   text-align: right; opacity: 0.8; font-size: 0.72rem; white-space: nowrap;
+  font-family: var(--fomc-num);
 }
 .fomc-heatmap td.nm {
   text-align: left; white-space: nowrap; padding-left: 0.15rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+  border-bottom: 1px solid var(--fomc-hair);
 }
 .fomc-heatmap td.nm.agg { font-weight: 600; }
-/* Master/controlling rows (Total private, Goods-producing, Service-providing):
-   shade the share + component cells as one grey band so the hierarchy reads
-   at a glance; the header cells of those two columns carry a fainter tint so
-   the group connects top to bottom. */
 .fomc-heatmap th.sh, .fomc-heatmap th.nm {
-  background: color-mix(in srgb, currentColor 6%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent);
 }
 .fomc-heatmap td.sh.agg, .fomc-heatmap td.nm.agg {
-  background: color-mix(in srgb, currentColor 11%, transparent);
-  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  border-top: 1px solid var(--fomc-hair-strong);
+  border-bottom: 1px solid var(--fomc-hair-strong);
 }
 .fomc-heatmap td.sh.agg { border-radius: 3px 0 0 3px; }
 .fomc-heatmap td.nm.agg { border-radius: 0 3px 3px 0; }
 .fomc-heatmap td.c {
-  text-align: center; border-radius: 2px; font-size: 0.74rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+  text-align: center; border-radius: 2px; font-size: 0.72rem;
+  font-family: var(--fomc-num); letter-spacing: -0.02em;
+  border-bottom: 1px solid var(--fomc-hair);
 }
 .fomc-heatmap td.c.bold { font-weight: 700; }
 .fomc-heatmap td.c.na { background: color-mix(in srgb, currentColor 5%, transparent); }
 .fomc-heatmap-legend {
   display: flex; align-items: center; gap: 0.2rem; margin: 0.1rem 0 0.4rem;
-  font-size: 0.66rem; opacity: 0.6;
+  font-size: 0.68rem; color: var(--fomc-muted, inherit);
 }
 .fomc-heatmap-legend .g { width: 18px; height: 6px; display: inline-block; }
 .fomc-heatmap-legend .gt { margin-left: 0.4rem; }
 
-/* Source-vintage line under a chart whose title is a Streamlit header rather
-   than an in-figure title. Sized and toned to match Altair's subtitle and
-   Plotly's title.subtitle, so the two kinds of chart read the same; the
-   negative top margin pulls it up under the header it belongs to. */
 .fomc-vintage {
-  font-size: 0.7rem; opacity: 0.6; font-variant-numeric: tabular-nums;
+  font-size: 0.72rem; color: var(--fomc-muted, inherit); font-variant-numeric: tabular-nums;
   margin: -0.45rem 0 0.5rem;
 }
 
-/* US CPI breakdowns (HTML table): the source is a terminal monitor -- the item
-   tree indented down the left, weights, then the monthly grid behind a rule.
-   Denser than .fomc-heatmap because it carries 52 rows and has to be readable
-   without scrolling the page. */
-/* The navy of the head/meta lines is the source's, and is passed in from the
-   Palette rather than set here -- the app's theme comes from Streamlit, not
-   from the OS, so a prefers-color-scheme rule would be the wrong switch. */
 .fomc-cpi-head {
   font-weight: 700; font-size: 0.95rem; letter-spacing: -0.01em;
   margin: 0.5rem 0 0.05rem;
 }
-.fomc-cpi-meta { font-size: 0.72rem; opacity: 0.85; }
+.fomc-cpi-meta { font-size: 0.74rem; color: var(--fomc-ink2, inherit); }
 .fomc-cpi {
   width: 100%; border-collapse: separate; border-spacing: 0;
   font-size: 0.74rem; font-variant-numeric: tabular-nums;
   margin: 0.3rem 0 0.15rem;
 }
 .fomc-cpi th {
-  font-weight: 600; font-size: 0.7rem; padding: 0.2rem 0.4rem;
+  font-weight: 600; font-size: 0.68rem; padding: 0.2rem 0.4rem;
   white-space: nowrap; text-align: right;
   border-bottom: 1px solid color-mix(in srgb, currentColor 45%, transparent);
 }
 .fomc-cpi th.nm { text-align: left; }
-.fomc-cpi td { padding: 0.14rem 0.4rem; white-space: nowrap; }
+.fomc-cpi td { padding: 0.13rem 0.4rem; white-space: nowrap; }
 .fomc-cpi td.nm { text-align: left; width: 40%; }
 .fomc-cpi td.w, .fomc-cpi th.w { text-align: right; }
-/* The source rules off the label + weights block from the monthly grid. */
 .fomc-cpi td.w, .fomc-cpi th.w {
   border-right: 1px solid color-mix(in srgb, currentColor 45%, transparent);
   padding-right: 0.55rem;
 }
 .fomc-cpi td.c, .fomc-cpi th.c { text-align: right; }
+.fomc-cpi td.c, .fomc-cpi td.w { font-family: var(--fomc-num); font-size: 0.94em; letter-spacing: -0.02em; }
 .fomc-cpi td.c.na { opacity: 0.45; }
 .fomc-cpi tbody tr:nth-child(even) td.nm,
 .fomc-cpi tbody tr:nth-child(even) td.w {
   background: color-mix(in srgb, currentColor 5%, transparent);
 }
-/* Indent by tree depth; the top three levels are the aggregates the eye
-   navigates by, so they also carry weight. */
 .fomc-cpi td.nm { padding-left: 0.3rem; }
 .fomc-cpi tr.l1 td.nm { padding-left: 1.0rem; }
 .fomc-cpi tr.l2 td.nm { padding-left: 1.7rem; }
@@ -215,106 +526,332 @@ hr, [data-testid="stDivider"] { margin: 0.55rem 0 !important; opacity: 0.45; }
 .fomc-cpi tr.l0 td.nm, .fomc-cpi tr.l1 td.nm { font-weight: 600; }
 .fomc-cpi tr.l2 td.nm { font-weight: 500; }
 
-/* Category legend under a coloured table */
 .fomc-legend { display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem; margin: 0.35rem 0 0.1rem; }
-.fomc-legend-item { font-size: 0.7rem; opacity: 0.72; display: inline-flex; align-items: center; gap: 0.35rem; }
-.fomc-legend-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; display: inline-block; flex: none; }
+.fomc-legend-item { font-size: 0.72rem; color: var(--fomc-ink2, inherit); display: inline-flex; align-items: center; gap: 0.35rem; }
+.fomc-legend-dot { width: 0.5rem; height: 0.5rem; border-radius: 2px; display: inline-block; flex: none; }
+.fomc-legend-mark { font-size: 0.8rem; line-height: 1; font-weight: 700; flex: none; opacity: 1; }
+.fomc-legend-icon { width: 0.95rem; height: 0.95rem; flex: none; display: block; }
 
-/* Verdict rows */
-.fomc-verdict-row {
-  display: flex; justify-content: space-between; gap: 0.6rem;
-  font-size: 0.8rem; padding: 0.2rem 0;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+.fomc-note { font-size: 0.75rem; color: var(--fomc-muted, inherit); line-height: 1.45; }
+/* `st.caption` in the main pane reads exactly as a `C.note`: one voice for
+   every small line of explanation, whichever call drew it. */
+[data-testid="stMain"] [data-testid="stCaptionContainer"],
+[data-testid="stMain"] [data-testid="stCaptionContainer"] p {
+  font-size: 0.75rem; line-height: 1.45; color: var(--fomc-muted, inherit);
 }
-.fomc-verdict-row .k { opacity: 0.68; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
-.fomc-verdict-row .v { font-variant-numeric: tabular-nums; text-align: right; font-weight: 500; white-space: nowrap; flex: none; }
-.fomc-verdict-row.emph .k, .fomc-verdict-row.emph .v { font-weight: 600; }
 
-/* Verdict section headers -- small uppercase group labels so a trader can
-   scan The trade / The view / The edge / The size / What to watch. */
-.fomc-verdict-sec {
-  font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em;
-  text-transform: uppercase; opacity: 0.55;
-  margin: 0.55rem 0 0.15rem;
-  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-  padding-top: 0.4rem;
-}
-.fomc-verdict-sec:first-of-type { border-top: none; margin-top: 0.25rem; padding-top: 0; }
 
-.fomc-note { font-size: 0.74rem; opacity: 0.7; line-height: 1.45; }
+/* One line of health per data source (components.data_source_header). */
+.fomc-src { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.1rem 0; }
+.fomc-src-name { font-weight: 600; font-size: 0.92rem; }
+.fomc-src-dot { font-size: 0.7rem; }
 
-/* Kill-criteria cards -- one bordered surface per criterion, echoing .fomc-verdict.
-   Scoped via the container's `key=` (Streamlit emits a real `st-key-kill_list`
-   class on it) rather than a hand-opened <div> -- markdown HTML is rendered into
-   its own isolated node, so an unclosed tag never actually wraps later siblings. */
-.st-key-kill_list [data-testid="stVerticalBlockBorderWrapper"] {
-  border-radius: 10px;
-  margin-bottom: 0.45rem;
-}
-.st-key-kill_list [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
-  gap: 0.3rem;
-}
-.st-key-kill_list [data-testid="stHorizontalBlock"] { gap: 0.3rem !important; }
-.st-key-kill_list [data-testid="stTextInput"] input { font-size: 0.85rem; font-weight: 500; }
-.st-key-kill_list [data-testid="stButton"] button {
-  min-height: 1.4rem !important; height: 1.4rem !important;
-  min-width: 1.4rem  !important; width: 1.4rem  !important;
-  padding: 0 !important; border-radius: 4px !important;
-  background: transparent !important; border: none !important; box-shadow: none !important;
-  opacity: 0.45; font-size: 0.75rem;
-}
-.st-key-kill_list [data-testid="stButton"] button:hover { opacity: 1; background: transparent !important; }
+/* -------------------------------------------------------------- sidebar */
 
-/* Tier checkboxes on the Monte Carlo fan chart -- narrow columns already do
-   most of the work of hugging them together; this closes the remaining gap
-   Streamlit's own column spacing would otherwise leave between them. */
-.st-key-tier_checks [data-testid="stHorizontalBlock"] { gap: 0.3rem !important; }
-.st-key-kill_list [data-testid="stButton"] button p { font-size: 0.75rem; }
-
-/* Sidebar density */
-[data-testid="stSidebar"] .block-container { padding-top: 1.1rem; }
+[data-testid="stSidebar"] { min-width: 284px !important; max-width: 296px !important; }
+[data-testid="stSidebarHeader"] { height: 2.2rem; min-height: 0; padding-top: 0.5rem; padding-bottom: 0; }
+[data-testid="stSidebarContent"] { padding-top: 0; }
+[data-testid="stSidebar"] .block-container { padding-top: 0.6rem; }
+[data-testid="stSidebarUserContent"] { padding: 0.4rem 1rem 1rem !important; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.3rem; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
+  font-size: 0.68rem !important; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--fomc-muted, inherit); margin: 0.6rem 0 0.1rem !important;
+}
 
-/* The +/- steppers cost 64px of a 122px sidebar input, which clips values like
-   "250000". These are typed, not stepped -- reclaim the width for the number. */
 [data-testid="stSidebar"] [data-testid="stNumberInputStepUp"],
 [data-testid="stSidebar"] [data-testid="stNumberInputStepDown"] { display: none !important; }
 [data-testid="stSidebar"] [data-testid="stNumberInputContainer"] input {
-  text-align: right; padding-right: 0.5rem;
+  text-align: right; padding-right: 0.5rem; font-family: var(--fomc-num); font-size: 0.8rem;
 }
 
-/* Sidebar form density. Stock Streamlit spends 68px per field (24px label +
-   40px control); these trim it to ~48px without shrinking the hit target below
-   a comfortable click. Scoped to the sidebar so the main pane is untouched. */
 [data-testid="stSidebar"] label p { font-size: 0.74rem !important; line-height: 1.15; }
 [data-testid="stSidebar"] label {
   min-height: 0 !important; margin-bottom: 0.05rem !important; padding-bottom: 0 !important;
 }
 [data-testid="stSidebar"] [data-testid="stNumberInputContainer"],
 [data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {
-  min-height: 2.1rem !important;
+  min-height: 1.95rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stNumberInputContainer"] input,
 [data-testid="stSidebar"] [data-baseweb="select"] input {
-  font-size: 0.82rem; padding-top: 0.15rem; padding-bottom: 0.15rem;
+  padding-top: 0.12rem; padding-bottom: 0.12rem;
 }
+[data-testid="stSidebar"] [data-baseweb="select"] { font-size: 0.78rem; letter-spacing: -0.01em; }
 [data-testid="stSidebar"] [data-baseweb="select"] > div:first-child > div { padding: 0 0.4rem; }
-/* The DV01 read-out sits directly under its control, not a row away. */
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { margin-top: -0.3rem; }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { font-size: 0.72rem; }
+[data-testid="stSidebar"] [data-testid="stSliderThumbValue"] { font-family: var(--fomc-num); font-size: 0.72rem; }
 
-/* A chart sub-heading inside a panel: air above the line, calm weight, so the
-   bold title doesn't collide with the note or the chart it labels. */
+/* Number inputs anywhere read as figures. */
+[data-testid="stNumberInputContainer"] input { font-family: var(--fomc-num); letter-spacing: -0.02em; }
+
+/* ------------------------------------------------------------- misc */
+
 .fomc-chart-title {
   font-size: 0.92rem !important;
   font-weight: 600;
   letter-spacing: -0.005em;
   margin: 1.05rem 0 0.15rem !important;
-  opacity: 0.92;
 }
-/* The Overall Indicator percentile dashboard and the diffusion index sit in
-   one logical block; give the diffusion header a touch more lift so the two
-   charts breathe instead of stacking edge-to-edge. */
 .fomc-note + .fomc-legend,
 .fomc-note + [data-testid="stAltairChart"] { margin-top: 0.35rem; }
 
+.fomc-taylor {
+  border-collapse: separate; border-spacing: 0;
+  font-size: 0.78rem; font-variant-numeric: tabular-nums;
+  margin: 0.35rem 0 0.15rem;
+}
+.fomc-taylor th {
+  font-weight: 600; font-size: 0.66rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--fomc-muted, inherit); padding: 0.25rem 0.3rem;
+  white-space: nowrap; text-align: center;
+}
+.fomc-taylor th.ax {
+  text-align: left; letter-spacing: 0.07em;
+  border-bottom: 1px solid var(--fomc-hair-strong);
+}
+.fomc-taylor th.rl, .fomc-taylor td.rl {
+  text-align: right; white-space: nowrap;
+  padding-right: 0.5rem;
+  border-right: 1px solid var(--fomc-hair-strong);
+}
+.fomc-taylor td.rl { font-size: 0.72rem; opacity: 0.8; }
+.fomc-taylor td.c {
+  text-align: center; padding: 0.22rem 0.4rem; min-width: 3.4rem;
+  font-family: var(--fomc-num); font-size: 0.74rem;
+}
+.fomc-taylor td.c.box { font-weight: 700; }
+
+.fomc-trheat {
+  width: 100%; border-collapse: separate; border-spacing: 1px 1px;
+  font-size: 0.78rem; font-variant-numeric: tabular-nums;
+  margin: 0.35rem 0 0.15rem;
+}
+.fomc-trheat th {
+  font-weight: 600; font-size: 0.66rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--fomc-muted, inherit); padding: 0.25rem 0.3rem;
+  white-space: nowrap; text-align: center;
+}
+.fomc-trheat th.ax {
+  text-align: center; letter-spacing: 0.07em;
+  border-bottom: 1px solid var(--fomc-hair-strong);
+}
+.fomc-trheat th.nm, .fomc-trheat td.nm {
+  text-align: right; white-space: nowrap; padding-right: 0.5rem;
+}
+.fomc-trheat td.nm { font-size: 0.72rem; opacity: 0.8; }
+.fomc-trheat td.c {
+  text-align: center; padding: 0.45rem 0.4rem; min-width: 3.4rem;
+  font-weight: 600; border-radius: 2px; font-family: var(--fomc-num); font-size: 0.74rem;
+}
+
+.fomc-slackmap {
+  width: 100%; border-collapse: separate; border-spacing: 2px 2px;
+  font-size: 0.72rem; font-variant-numeric: tabular-nums;
+  margin: 0.35rem 0 0.15rem; table-layout: fixed;
+}
+.fomc-slackmap th {
+  font-weight: 600; font-size: 0.66rem;
+  letter-spacing: 0.02em; color: var(--fomc-muted, inherit); padding: 0.1rem 0.2rem;
+  text-align: center; white-space: nowrap;
+  border-bottom: 1px solid var(--fomc-hair-strong);
+}
+.fomc-slackmap th .yr { opacity: 0.7; }
+.fomc-slackmap th.nm, .fomc-slackmap td.nm {
+  width: 12.5rem; text-align: right; white-space: nowrap;
+  padding-right: 0.45rem; border-bottom: none;
+  font-size: 0.72rem; letter-spacing: -0.01em;
+}
+.fomc-slackmap td.c {
+  text-align: center; padding: 0.15rem 0.1rem; border-radius: 2px;
+  font-family: var(--fomc-num); font-size: 0.68rem; letter-spacing: -0.03em;
+}
+.fomc-slackmap td.c.na { background: color-mix(in srgb, currentColor 4%, transparent); }
+.fomc-slackmap .approx {
+  opacity: 0.45; font-size: 0.62rem; vertical-align: super;
+  padding-left: 0.12rem; cursor: help;
+}
+
+.fomc-eyebrow {
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--fomc-muted, inherit); margin: 0.25rem 0 0.2rem;
+}
+.fomc-quote { border-left: 2px solid currentColor; padding-left: 0.6rem; margin: 0.3rem 0; }
+.fomc-trigger {
+  font-size: 0.9rem; font-weight: 600; letter-spacing: 0.01em;
+  padding: 0.4rem 0.65rem; margin: 0.25rem 0;
+  border-left: 3px solid currentColor; background: rgba(127, 127, 127, 0.06);
+}
+.fomc-bar { height: 9px; border-radius: 2px; opacity: 0.75; }
+.fomc-indent { padding-left: 14px; display: inline-block; }
+.fomc-zcell {
+  display: inline-block; min-width: 3.4em; text-align: right;
+  padding: 0 6px; border-radius: 3px; font-family: var(--fomc-num); font-size: 0.94em;
+}
+
+/* Expanders: flat, hairline, like everything else. */
+[data-testid="stExpander"] details { border-color: var(--fomc-rule) !important; border-radius: 5px; }
+[data-testid="stExpander"] summary p { font-size: 0.82rem; font-weight: 500; }
+
+/* Buttons: quieter weight, same height as the inputs beside them. */
+.stButton button, .stDownloadButton button { font-weight: 500; }
+
+/* One orchestrated reveal on load: the tape, then the tabs, then the rail. */
+@media (prefers-reduced-motion: no-preference) {
+  .fomc-tape { animation: fomc-rise 260ms ease-out both; }
+  .st-key-section { animation: fomc-rise 260ms 60ms ease-out both; }
+  .st-key-verdict { animation: fomc-rise 320ms 120ms ease-out both; }
+}
+@keyframes fomc-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* ------------------------------------------------------------ trade recs
+
+   Three trades on one calendar. The ruler pins each horizon at its real exit
+   date, so the gaps between them are the calendar's. Each trade is a ticket:
+   a stub with the expression and its levels, torn along a perforation from
+   the case for it. Blue = receive (rates lower), red = pay (rates higher),
+   the same reading as every hawk/dove colour on the desk; amber stays the
+   selection colour and marks entry and conviction only. */
+
+.rx-meta { font-size: 0.74rem; color: var(--fomc-muted, inherit); margin: 0.1rem 0 0.4rem;
+           display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: baseline; }
+.rx-stale { color: var(--fomc-warn); font-weight: 600; }
+
+.rx-eyebrow { font-size: 0.64rem; font-weight: 700; letter-spacing: 0.1em;
+              text-transform: uppercase; color: var(--fomc-muted, inherit); }
+
+.rx-view { margin: 0.5rem 0 0.2rem; max-width: 88ch; }
+.rx-regime { font-size: 1.08rem; font-weight: 650; font-stretch: 88%; letter-spacing: -0.012em;
+             line-height: 1.2; margin: 0.15rem 0 0.35rem; }
+.rx-desk { font-size: 0.86rem; line-height: 1.55; color: var(--fomc-ink2, inherit); margin: 0; }
+
+/* The ruler: today on the left, the three exits where the calendar puts them.
+   Today's date sits above the line and the exits hang below it, so an exit
+   two days out cannot collide with it. */
+.rx-ruler { position: relative; height: 5.6rem; margin: 0.9rem 0.4rem 0.5rem 0.4rem; }
+.rx-rule { position: absolute; left: 0; right: 0; top: 1.25rem; height: 1px;
+           background: var(--fomc-hair-strong); }
+.rx-today { position: absolute; left: 0; top: 0; }
+.rx-today span { white-space: nowrap; font-family: var(--fomc-num); font-size: 0.68rem;
+                 color: var(--fomc-muted, inherit); }
+.rx-today::after { content: ""; position: absolute; left: -3px; top: calc(1.25rem - 3px); width: 7px;
+                   height: 7px; border-radius: 50%; background: var(--fomc-ink, currentColor); }
+.rx-pin { position: absolute; top: 1.25rem; transform: translateX(-50%); display: flex;
+          flex-direction: column; align-items: center; text-align: center; white-space: nowrap; }
+.rx-pin.near-start { transform: translateX(-1px); align-items: flex-start; text-align: left; }
+.rx-pin.near-end { transform: translateX(calc(-100% + 1px)); align-items: flex-end; text-align: right; }
+.rx-pin-mark { width: 2px; height: 1rem; margin-top: -0.3rem; background: currentColor; border-radius: 1px; }
+.rx-pin-date { font-family: var(--fomc-num); font-size: 0.72rem; font-weight: 600; margin-top: 0.2rem; }
+.rx-pin-name { font-size: 0.7rem; color: var(--fomc-ink2, inherit); }
+.rx-pin-what { font-size: 0.68rem; color: var(--fomc-muted, inherit); display: inline-flex;
+               gap: 0.3rem; align-items: center; }
+.rx-pin.rx-rec { color: var(--fomc-pos); }
+.rx-pin.rx-pay { color: var(--fomc-neg); }
+.rx-pin.rx-curve, .rx-pin.rx-open { color: var(--fomc-ink2, inherit); }
+
+/* Conviction: five bars, amber when lit. */
+.rx-meter { display: inline-flex; gap: 2px; align-items: flex-end; }
+.rx-meter i { display: block; width: 5px; height: 11px; border-radius: 1px;
+              background: var(--fomc-hair-strong); }
+.rx-meter i.on { background: var(--fomc-select); }
+.rx-meter.sm i { width: 3px; height: 7px; }
+
+/* The ticket. */
+.rx-ticket { display: grid; grid-template-columns: minmax(17rem, 0.9fr) 2.2fr;
+             border: 1px solid var(--fomc-rule); border-radius: 6px; margin: 0.9rem 0;
+             background: color-mix(in srgb, currentColor 1.5%, transparent);
+             border-left: 3px solid var(--rx-tone, var(--fomc-rule)); }
+.rx-ticket.rx-rec { --rx-tone: var(--fomc-pos); }
+.rx-ticket.rx-pay { --rx-tone: var(--fomc-neg); }
+.rx-ticket.rx-curve { --rx-tone: var(--fomc-ink2); }
+
+.rx-stub { position: relative; padding: 0.85rem 1.1rem 0.9rem 1rem;
+           border-right: 1px dashed var(--fomc-hair-strong); }
+/* The perforation's two notches, cut out of the ticket's edge. */
+.rx-stub::before, .rx-stub::after { content: ""; position: absolute; right: -7px; width: 13px;
+  height: 13px; border-radius: 50%; background: var(--fomc-bg, transparent);
+  border: 1px solid var(--fomc-rule); }
+.rx-stub::before { top: -7px; }
+.rx-stub::after { bottom: -7px; }
+
+.rx-when { font-family: var(--fomc-num); font-size: 0.78rem; font-weight: 600; margin-top: 0.15rem; }
+.rx-when span { font-family: var(--fomc-sans); font-weight: 400; color: var(--fomc-ink2, inherit); }
+.rx-side { display: inline-block; margin: 0.65rem 0 0.15rem; font-size: 0.66rem; font-weight: 800;
+           letter-spacing: 0.14em; text-transform: uppercase; color: var(--rx-tone, inherit);
+           border: 1px solid currentColor; border-radius: 3px; padding: 0.05rem 0.4rem; }
+h3.rx-title { font-size: 1.02rem !important; line-height: 1.25; margin: 0.25rem 0 0.2rem !important;
+              font-weight: 650; font-stretch: 92%; }
+.rx-expr { font-family: var(--fomc-num); font-size: 0.8rem; color: var(--fomc-ink2, inherit);
+           letter-spacing: -0.02em; }
+
+/* One row per level: the model quotes a level with its contract and price
+   ("+16.5bp Oct step (FFX6 95.955)"), which three narrow columns broke up. */
+.rx-levels { margin: 0.75rem 0 0.35rem; }
+.rx-levels div { display: grid; grid-template-columns: 3.6rem 1fr; gap: 0.5rem; align-items: baseline;
+                 padding: 0.2rem 0; border-bottom: 1px solid var(--fomc-hair); }
+.rx-levels div:last-child { border-bottom: none; }
+.rx-levels dt { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+                color: var(--fomc-muted, inherit); }
+.rx-levels dd { margin: 0; font-family: var(--fomc-num); font-size: 0.78rem; font-weight: 600;
+                letter-spacing: -0.02em; line-height: 1.35; overflow-wrap: anywhere; }
+
+/* Stop, entry and target on one scale: reward in the trade's tone, risk grey. */
+.rx-scale { position: relative; height: 2.35rem; margin: 0.5rem 0.6rem 0.2rem; }
+.rx-scale::before { content: ""; position: absolute; left: 0; right: 0; top: 0.55rem; height: 1px;
+                    background: var(--fomc-hair-strong); }
+.rx-seg { position: absolute; top: calc(0.55rem - 2px); height: 5px; border-radius: 2px; }
+.rx-seg.reward { background: var(--rx-tone, var(--fomc-ink2)); opacity: 0.85; }
+.rx-seg.risk { background: var(--fomc-muted); opacity: 0.45; }
+.rx-tick { position: absolute; top: 0; transform: translateX(-50%); display: flex; flex-direction: column;
+           align-items: center; font-size: 0.6rem; color: var(--fomc-muted, inherit); line-height: 1.1; }
+.rx-tick::before { content: ""; width: 1px; height: 0.8rem; background: currentColor; margin-bottom: 0.1rem; }
+.rx-tick b { font-family: var(--fomc-num); font-size: 0.7rem; color: var(--fomc-ink, inherit); }
+.rx-tick.entry { color: var(--fomc-select); }
+.rx-tick.entry::before { width: 2px; }
+
+.rx-stats { display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; font-size: 0.7rem;
+            color: var(--fomc-muted, inherit); margin-top: 0.3rem; }
+.rx-stats b { font-family: var(--fomc-num); color: var(--fomc-ink, inherit); font-size: 0.8rem; margin-right: 0.1rem; }
+.rx-conv { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.7rem; font-size: 0.72rem;
+           color: var(--fomc-ink2, inherit); }
+.rx-size { font-size: 0.74rem; color: var(--fomc-ink2, inherit); margin-top: 0.3rem; line-height: 1.4; }
+.rx-warn { font-size: 0.72rem; color: var(--fomc-crit); margin-top: 0.3rem; }
+
+.rx-case { padding: 0.85rem 1.1rem 0.9rem 1.4rem; min-width: 0; }
+.rx-thesis { font-size: 0.9rem; line-height: 1.5; font-weight: 450; margin: 0 0 0.75rem;
+             padding-left: 0.7rem; border-left: 2px solid var(--rx-tone, var(--fomc-rule)); }
+.rx-cols, .rx-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 1.6rem; }
+.rx-foot { margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid var(--fomc-hair); }
+.rx-case ul { list-style: none; margin: 0.3rem 0 0; padding: 0; }
+.rx-fund li, .rx-risks li { position: relative; font-size: 0.8rem; line-height: 1.45;
+                            padding: 0.18rem 0 0.18rem 0.85rem; }
+.rx-fund li::before, .rx-risks li::before { content: ""; position: absolute; left: 0; top: 0.72em;
+  width: 0.4rem; height: 1px; background: var(--fomc-muted); }
+.rx-quant li { display: grid; grid-template-columns: minmax(4.6rem, max-content) 1fr; gap: 0.7rem;
+               align-items: baseline; padding: 0.22rem 0; border-bottom: 1px solid var(--fomc-hair);
+               font-size: 0.8rem; line-height: 1.4; }
+.rx-quant li:last-child { border-bottom: none; }
+.rx-fig { font-family: var(--fomc-num); font-weight: 650; font-size: 0.86rem; letter-spacing: -0.03em;
+          text-align: right; max-width: 9.5rem; overflow-wrap: anywhere; }
+.rx-wrong p { margin: 0.3rem 0 0; font-size: 0.8rem; line-height: 1.45;
+              padding-left: 0.6rem; border-left: 2px solid var(--fomc-crit); }
+
+.rx-empty { border: 1px dashed var(--fomc-hair-strong); border-radius: 6px; padding: 0.9rem 1.1rem;
+            margin: 0.4rem 0; max-width: 88ch; font-size: 0.84rem; line-height: 1.5; }
+.rx-empty p { margin: 0; }
+.rx-empty ul { margin: 0.5rem 0; padding-left: 1.1rem; }
+.rx-empty li span { color: var(--fomc-muted, inherit); }
+.rx-empty-note { font-size: 0.75rem; color: var(--fomc-muted, inherit); }
+
+@media (max-width: 1100px) {
+  .rx-ticket { grid-template-columns: 1fr; }
+  .rx-stub { border-right: none; border-bottom: 1px dashed var(--fomc-hair-strong); }
+  .rx-stub::before, .rx-stub::after { display: none; }
+  .rx-cols, .rx-foot { grid-template-columns: 1fr; }
+  .rx-pin-name, .rx-pin-what { display: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rx-ticket { animation: fomc-rise 300ms ease-out both; }
+}

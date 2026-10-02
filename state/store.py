@@ -71,9 +71,88 @@ def load(key: str) -> dict[str, Any]:
 
 
 def save(key: str, data: dict[str, Any]) -> Path:
+    """Write one meeting's state, stamping when it was last saved."""
+    from core import clock
+    data["saved_at"] = clock.stamp()
     p = meeting_path(key)
     _write(p, data)
     return p
+
+
+def delete_trade(key: str) -> bool:
+    """Remove one saved trade file. `False` when no such file existed."""
+    p = meeting_path(key)
+    if not p.exists():
+        return False
+    p.unlink()
+    return True
+
+
+def _trade_title(data: dict[str, Any]) -> str:
+    """Short unique title: the decision month, e.g. "Nov 2026"."""
+    end = (data.get("meeting") or {}).get("end")
+    if end:
+        try:
+            return f"{date.fromisoformat(str(end)):%b %Y}"
+        except ValueError:
+            return str(end)
+    return str(data.get("label") or "RBA trade")
+
+
+def _contract_label(key: str, as_of: str | None) -> str:
+    """Human label for a saved contract key, incl. keys that rolled off strip."""
+    anchor = None
+    if as_of:
+        try:
+            anchor = date.fromisoformat(as_of)
+        except ValueError:
+            anchor = None
+    from core import sizing
+    return sizing.contract_for(key, anchor).label
+
+
+def describe_trade(key: str) -> dict[str, Any] | None:
+    """One saved meeting as a sidebar recall row; `None` when nothing is saved."""
+    p = meeting_path(key)
+    if not p.exists():
+        return None
+    try:
+        data = _read(p)
+    except (OSError, ValueError):
+        return None
+    if data.get("example"):
+        return None
+    trade = data.get("trade") or {}
+    size, points = trade.get("size"), trade.get("points")
+    side, direction = trade.get("side", "fade"), trade.get("direction", "hike")
+    leg = (f"{side} {size:g}bp {direction}"
+           if isinstance(size, (int, float)) and size else str(side))
+    leg += " · unpriced" if points is None else f" · {points:g}bp priced"
+    prob = data.get("probability") or {}
+    q = None
+    if points is not None:
+        if prob.get("mode") == "manual" and prob.get("override_q") is not None:
+            q = f"q {prob['override_q']:.1%}"
+        elif prob.get("p_bloc") is not None and prob.get("p_centre") is not None:
+            q = (f"q {prob['p_bloc'] * prob['p_centre']:.1%} "
+                 f"({prob['p_bloc']:.0%} × {prob['p_centre']:.0%})")
+    contract = (data.get("sizing") or {}).get("contract")
+    instrument = code = None
+    if contract:
+        try:
+            instrument = _contract_label(str(contract), data.get("as_of"))
+        except Exception:
+            instrument = str(contract)
+        head = instrument.split(" — ", 1)[0].strip()
+        code = head if head and " " not in head else None
+    return {"key": key, "title": _trade_title(data), "text": leg, "code": code,
+            "instrument": instrument, "q": q, "as_of": data.get("as_of"),
+            "saved_at": data.get("saved_at")}
+
+
+def saved_trade_rows() -> list[dict[str, Any]]:
+    """Every saved meeting as a recall row, newest decision first."""
+    return [r for r in (describe_trade(k) for k in reversed(list_saved())) if r is not None]
 
 
 def load_roster() -> list[dict[str, Any]]:

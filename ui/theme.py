@@ -1,26 +1,4 @@
-"""Palette and theme resolution.
-
-Colours come from the dataviz reference palette and were run through its
-validator as a three-slot categorical set in both modes:
-
-    light  #2a78d6 / #e34948 / #1baf7a   ALL CHECKS PASS
-    dark   #3987e5 / #e66767 / #199e70   ALL CHECKS PASS
-
-Aqua-vs-red sits in the 6-8 CVD warn band, which is legal only with secondary
-encoding -- so the aqua "your estimate" rule is *always* direct-labelled. Do not
-ship it as a bare coloured line.
-
-Role assignment:
-  blue    positive P&L          (diverging arm)
-  red     negative P&L          (diverging arm)
-  aqua    your probability      (always direct-labelled)
-  muted   breakeven / market-implied rule (dashed, direct-labelled)
-  status  kill criteria only, always with an icon and a label
-  seq     magnitude (e.g. touch probability along a swept curve) -- one hue,
-          light to dark, same hue angle as accent; always paired with a
-          colorbar legend and a hover tooltip, per the dataviz skill's rule
-          that a sequential encoding is never colour-alone.
-"""
+"""Palette and theme resolution."""
 
 from __future__ import annotations
 
@@ -48,45 +26,45 @@ class Palette:
     critical: str = "#d03b3b"
     seq_low: str = "#bee2d5"
     seq_high: str = "#033a26"
-    # Eight categorical slots, assigned in this fixed order and never cycled.
-    # The Inflation tab's composition stack is the only chart here that needs
-    # more than three identities. Validated as a set in both modes on the
-    # adjacent pairlist, which is the one that governs stacks, bars and lines:
-    #   light  worst adjacent CVD dE 9.1, normal-vision 19.6   ALL CHECKS PASS
-    #   dark   worst adjacent CVD dE 8.4, normal-vision 19.3   ALL CHECKS PASS
-    # Light mode returns a contrast WARN on three slots, which obligates relief
-    # rather than being dismissable -- hence the legend and the per-segment
-    # hover readout on every chart that uses them.
+    voter_ink: str = "#0f7a4f"
+    #: The selection colour (.streamlit/config.toml primaryColor): selected
+    #: tabs, focus, the countdown when a decision is close. Never a P&L colour.
+    select: str = "#f0a53a"
+    #: Hairline for structure on the page (the theme's borderColor).
+    rule: str = "#262a30"
+    # Eight categorical slots, assigned in this fixed order and never cycled:
+    # the CPI composition stack and the multi-line charts are the only ones
+    # that need more than three identities. Validated as a set in both modes on
+    # the adjacent pairlist (worst adjacent CVD dE 9.1 light, 8.4 dark).
     categorical: tuple[str, ...] = ()
 
 
+#: `surface` is the page itself (.streamlit/config.toml backgroundColor), so a
+#: chart's paper is invisible and every chart -- Plotly or Altair -- sits flush
+#: on the page instead of on a card of a slightly different grey. `plane`, the
+#: plot area, is the same colour: structure comes from the grid hairlines.
 LIGHT = Palette(
     mode="light",
-    surface="#fcfcfb", plane="#f9f9f7",
-    ink="#0b0b0b", ink_secondary="#52514e", muted="#898781",
-    grid="#e1e0d9", baseline="#c3c2b7",
+    surface="#fbfaf7", plane="#fbfaf7",
+    ink="#16181c", ink_secondary="#4e5058", muted="#8a8c93",
+    grid="#e6e3da", baseline="#c9c5ba",
     positive="#2a78d6", negative="#e34948", accent="#1baf7a",
-    # High end pushed to a near-black-teal rather than the mid-tone accent
-    # itself -- WCAG contrast between the two ends is 9.2:1, more than double
-    # the original 4.1:1, so a glance at either tip of the line reads as
-    # unambiguously different rather than two shades of the same green.
     seq_low="#bee2d5", seq_high="#033a26",
+    voter_ink="#0f7a4f",
+    warning="#996903", serious="#c74817",
+    select="#b86e00", rule="#dcd9d0",
     categorical=("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
                  "#e87ba4", "#008300", "#4a3aa7", "#e34948"),
 )
 
 DARK = Palette(
     mode="dark",
-    surface="#1a1a19", plane="#0d0d0d",
-    ink="#ffffff", ink_secondary="#c3c2b7", muted="#898781",
-    grid="#2c2c2a", baseline="#383835",
+    surface="#0c0d0f", plane="#0c0d0f",
+    ink="#e7e5e0", ink_secondary="#b8b6af", muted="#858a93",
+    grid="#1f2227", baseline="#3a3e46",
     positive="#3987e5", negative="#e66767", accent="#199e70",
-    # Dark theme's low end is lifted well above the near-black surface (same
-    # floor the grid/baseline lines already sit at) so it reads as a dim line,
-    # not as background; the high end is pushed brighter than the accent
-    # itself for the same reason as light theme's dark end -- endpoint
-    # contrast goes from 4.3:1 to 6.1:1.
     seq_low="#21634d", seq_high="#bdfae5",
+    voter_ink="#5ad39a",
     categorical=("#3987e5", "#d95926", "#199e70", "#c98500",
                  "#d55181", "#008300", "#9085e9", "#e66767"),
 )
@@ -114,3 +92,64 @@ def pnl_colour(value: float, p: Palette) -> str:
     if value < 0:
         return p.negative
     return p.muted
+
+
+#: Release families: the four-colour language every calendar row, Monte Carlo
+#: release marker and reaction card shares. The US version's "Business surveys"
+#: slot is Activity here -- Australia's tier-1 non-labour, non-price print is
+#: the National Accounts, not a PMI -- and the Fed's slot is the RBA's own.
+RELEASE_FAMILIES = ("labour", "inflation", "activity", "rba")
+FAMILY_NAME = {"labour": "Labour market", "inflation": "Inflation",
+               "activity": "Activity", "rba": "RBA calendar"}
+FAMILY_SOLID = {"labour": "#3b82f6", "inflation": "#d97706",
+                "activity": "#0d9488", "rba": "#8b5cf6"}
+FAMILY_TINT = {"labour": "rgba(59,130,246,0.11)", "inflation": "rgba(217,119,6,0.12)",
+               "activity": "rgba(13,148,136,0.11)", "rba": "rgba(139,92,246,0.12)"}
+
+#: Calendar row label -> family (`core.econ_calendar.Event.label`).
+EVENT_FAMILY = {
+    "Labour Force (employment, unemployment rate)": "labour",
+    "Wage Price Index": "labour",
+    "CPI, quarterly (headline and trimmed mean)": "inflation",
+    "Monthly CPI indicator": "inflation",
+    "Monthly CPI": "inflation",
+    "National Accounts (GDP)": "activity",
+    "Household Spending Indicator": "activity",
+}
+
+#: Release (the report, `Event.release`) -> family, for the Monte Carlo
+#: markers and the vol-multiplier table.
+RELEASE_FAMILY = {
+    "Labour Force": "labour",
+    "Wage Price Index": "labour",
+    "CPI (quarterly)": "inflation",
+    "Monthly CPI indicator": "inflation",
+    "National Accounts (GDP)": "activity",
+    "RBA decision": "rba",
+    "Statement on Monetary Policy": "rba",
+    "RBA minutes": "rba",
+}
+RELEASE_FAMILY_COLOUR = {name: FAMILY_SOLID[fam] for name, fam in RELEASE_FAMILY.items()}
+
+
+def event_family(label: str) -> str | None:
+    """Which release family a calendar row belongs to, if any. RBA rows carry
+    a suffix when the meeting has a Statement, so they match by prefix."""
+    fam = EVENT_FAMILY.get(label)
+    if fam:
+        return fam
+    if label.startswith("RBA decision") or label.startswith("RBA minutes"):
+        return "rba"
+    return None
+
+
+def tint(colour: str, alpha: float) -> str:
+    """A hex palette colour as a translucent `rgba()` fill."""
+    h = colour.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    try:
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return "transparent"
+    return f"rgba({r},{g},{b},{max(0.0, min(1.0, alpha)):.3f})"
