@@ -62,10 +62,12 @@ def render(ctx: Ctx) -> None:
               f"{sum(1 for k in macro_mod.BY_KEY if k in bundle)} rows have a keyless live feed "
               "(switch to Live).")
 
-    chart_col, table_col = st.columns([0.74, 1.31], gap="large")
+    chart_col, table_col = st.columns([0.62, 1.31], gap="small")
     with chart_col:
-        C.legend([("Stronger than 2000–2020 average", P.positive), ("Weaker", P.negative)])
-        st.altair_chart(charts.macro_dots(readings, P), width="stretch", theme=None)
+        st.altair_chart(charts.macro_dots(readings, P, groups, total, GROUP_TINT),
+                        width="stretch", theme=None)
+        C.legend([("Stronger than 2000–2020 average", P.positive), ("Weaker", P.negative),
+                  ("Group mean", P.ink_secondary, "◆")])
     with table_col:
         _table(readings, groups, total, live, P)
 

@@ -197,6 +197,11 @@ def _base(p: Palette) -> dict:
     }
 
 
+def _quarter_start(d) -> date:
+    d = pd.Timestamp(d)
+    return date(d.year, (d.month - 1) // 3 * 3 + 1, 1)
+
+
 def _apply(chart: alt.Chart, p: Palette, height: int) -> alt.Chart:
     cfg = _base(p)["config"]
     if isinstance(chart, (alt.VConcatChart, alt.HConcatChart, alt.ConcatChart)):
@@ -1291,17 +1296,14 @@ def cpi_composition(buckets, cpi_line, order: list[str], p: Palette,
                     & (line["when"] <= df["when"].max())]
     scale = alt.Scale(domain=order, range=list(p.categorical[:len(order)]))
 
-    # Bar width set here rather than left to Vega, and scaled to how many
-    # quarters the history window actually put on screen. Vega's automatic
-    # width plus the surface stroke that separates stacked segments renders
-    # forty quarters as a row of hairlines; a fixed width instead leaves four
-    # quarters looking like stray ticks. Roughly three-quarters of each
-    # quarter's slice of an assumed half-width column, clamped either side.
-    n_bars = df["when"].nunique() or 1
-    bar_w = max(3.0, min(30.0, 380.0 / n_bars * 0.75))
-    bars = alt.Chart(df).mark_bar(size=bar_w, stroke=p.surface,
+    # Each bar fills 82% of its own quarter's band, so the spacing is the
+    # same at any width and any window -- a fixed pixel width guessed from an
+    # assumed column left wide gaps on a wide screen and hairlines on a narrow
+    # one.
+    axis = _time_axis(df)
+    bars = alt.Chart(df).mark_bar(width=alt.RelativeBandSize(0.82), stroke=p.surface,
                                   strokeWidth=0.5).encode(
-        x=alt.X("when:T", axis=_time_axis(df)),
+        x=alt.X("when:T", timeUnit="yearquarter", axis=axis),
         y=alt.Y("value:Q", stack="zero",
                 axis=alt.Axis(title="percentage points", format=".1f")),
         # No Vega legend: seven buckets on the right cost the plot its width and
@@ -1316,7 +1318,8 @@ def cpi_composition(buckets, cpi_line, order: list[str], p: Palette,
     zero = (alt.Chart(pd.DataFrame({"y": [0.0]}))
             .mark_rule(color=p.baseline, strokeWidth=1).encode(y=alt.Y("y:Q")))
     cpi = alt.Chart(line).mark_line(strokeWidth=LINE_WIDTH, color=p.ink).encode(
-        x=alt.X("when:T"), y=alt.Y("value:Q"),
+        x=alt.X("when:T", timeUnit="yearquarter", bandPosition=0.5, axis=axis),
+        y=alt.Y("value:Q"),
         tooltip=[alt.Tooltip("when:T", title="quarter", format="%b %Y"),
                  alt.Tooltip("value:Q", title="CPI, % q/q", format="+.2f")])
     title = vintage_title("Contributions to CPI inflation — quarterly, "
@@ -1599,51 +1602,79 @@ def _macro_time_format(dates: list[date]) -> tuple[str, int]:
     return ("%b %Y", 8) if (max(dates) - min(dates)).days <= 3 * 366 else ("%Y", 6)
 
 
-def macro_dots(readings, p: Palette, height: int = 560) -> alt.LayerChart:
+#: One row of the Macro tab's table, px (C.table's 26.2px row) and its header.
+#: The dot plot is drawn on the same grid so each dot sits beside its row.
+MACRO_ROW_PX = 26.2
+MACRO_HEAD_PX = 23.4
+
+
+def macro_dots(readings, p: Palette, groups=None, total: float | None = None,
+               tints: dict[str, str] | None = None) -> alt.LayerChart:
     """The 'Australian Macroeconomic Indicators' dot plot: every indicator as a
     z-score of its own 2000-2020 momentum distribution, on one axis.
 
-    A dumbbell per row where a live series carries history: the faint dot is the
-    score three and six months ago, the filled dot is now, the rule between is
-    the travel. A seed row has only the filled dot. Zero is the only reference
-    the axis has -- a z of 0 is average momentum for that series. Colour is the
-    sign of the current score (blue = stronger than average, red = weaker);
-    rows run top-to-bottom in the slide's order.
+    Drawn row for row beside the table: one band per table row, the group
+    rows tinted as the table tints them and carrying the group's own z (a
+    diamond), the Total last. A dumbbell per row where a live series carries
+    history: the faint dot is the score three and six months ago, the filled
+    dot is now, the rule between is the travel. Colour is the sign of the
+    current score (blue = stronger than average, red = weaker).
     """
-    rows, seg, order = [], [], []
-    for r in readings:
-        if not r.ok:
-            continue
-        lbl = r.indicator.label
-        order.append(lbl)
-        rows.append({
-            "label": lbl, "group": r.indicator.group, "z": r.z,
-            "sign": "up" if r.z >= 0 else "down",
-            "last": r.last, "mean": r.hist_mean,
-            "as_of": r.as_of.isoformat() if r.as_of else "",
-            "kind": "live" if r.live else "seed",
-        })
-        z3, z6 = r.z_prev
-        if z3 is not None:
-            seg.append({"label": lbl, "z": z6 if z6 is not None else z3,
-                        "z2": r.z, "sign": rows[-1]["sign"]})
+    by_group = {g.group: g for g in (groups or [])}
+    tints = tints or {}
+    order, rows, seg, heads = [], [], [], []
+    group_order = list(dict.fromkeys(r.indicator.group for r in readings))
+    for grp in group_order:
+        key = f"g:{grp}"
+        order.append(key)
+        gz = by_group[grp].z if grp in by_group else None
+        heads.append({"key": key, "tint": tints.get(grp, "rgba(137,135,129,0.10)"),
+                      "z": gz, "label": grp,
+                      "sign": "up" if (gz or 0) >= 0 else "down"})
+        for r in readings:
+            if r.indicator.group != grp:
+                continue
+            key = f"i:{r.indicator.label}"
+            order.append(key)
+            if not r.ok:
+                continue
+            rows.append({
+                "key": key, "label": r.indicator.label, "group": grp, "z": r.z,
+                "sign": "up" if r.z >= 0 else "down",
+                "last": r.last, "mean": r.hist_mean,
+                "as_of": r.as_of.isoformat() if r.as_of else "",
+                "kind": "live" if r.live else "seed",
+            })
+            z3, z6 = r.z_prev
+            if z3 is not None:
+                seg.append({"key": key, "z": z6 if z6 is not None else z3,
+                            "z2": r.z, "sign": rows[-1]["sign"]})
+    order.append("t:Total")
+    heads.append({"key": "t:Total", "tint": "rgba(0,0,0,0)", "z": total, "label": "Total",
+                  "sign": "up" if (total or 0) >= 0 else "down"})
+    plot_h = round(MACRO_ROW_PX * len(order))
     if not rows:
-        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()),
-                      p, height)
-    df, sdf = pd.DataFrame(rows), pd.DataFrame(seg)
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()), p, plot_h)
+    df, sdf, hdf = pd.DataFrame(rows), pd.DataFrame(seg), pd.DataFrame(heads)
 
-    dom = max(2.5, min(4.5, float(df["z"].abs().max()) + 0.3))
+    zs = [abs(v) for v in list(df["z"]) + [h["z"] for h in heads if h["z"] is not None]]
+    dom = max(2.5, min(4.5, max(zs) + 0.3))
     x_scale = alt.Scale(domain=[-dom, dom])
     sign_scale = alt.Scale(domain=["up", "down"], range=[p.positive, p.negative])
-    y_enc = alt.Y("label:N", sort=order, axis=alt.Axis(
-        title=None, labelFontSize=10, labelLimit=240, grid=True, ticks=False,
-        domain=False))
+    # No row labels: the table beside names every row on the same line, and
+    # repeating them here cost the plot its width in a half-width column.
+    y_enc = alt.Y("key:N", sort=order, scale=alt.Scale(domain=order, paddingInner=0,
+                                                         paddingOuter=0),
+                  axis=None)
     x_enc = alt.X("z:Q", scale=x_scale, axis=alt.Axis(
-        title="z-score of 2000\u20132020 momentum   \u2014   weaker \u2190 \u2192 stronger",
+        title="z vs 2000–2020   weaker ← → stronger",
         values=[-3, -2, -1, 0, 1, 2, 3]))
 
-    layers = [alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
-        color=p.baseline, strokeWidth=1).encode(x="x:Q")]
+    layers = [
+        alt.Chart(hdf).mark_rect().encode(y=y_enc, color=alt.Color("tint:N", scale=None)),
+        alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
+            color=p.baseline, strokeWidth=1).encode(x="x:Q"),
+    ]
     if not sdf.empty:
         layers.append(alt.Chart(sdf).mark_rule(strokeWidth=2, opacity=0.4).encode(
             y=y_enc, x=alt.X("z:Q", scale=x_scale, title=None), x2="z2:Q",
@@ -1660,10 +1691,24 @@ def macro_dots(readings, p: Palette, height: int = 560) -> alt.LayerChart:
                  alt.Tooltip("group:N", title="group"),
                  alt.Tooltip("z:Q", format="+.2f", title="z-score"),
                  alt.Tooltip("last:Q", format=".2f", title="latest transform"),
-                 alt.Tooltip("mean:Q", format=".2f", title="2000\u20132020 mean"),
+                 alt.Tooltip("mean:Q", format=".2f", title="2000–2020 mean"),
                  alt.Tooltip("as_of:N", title="as of"),
                  alt.Tooltip("kind:N", title="source")]))
-    return _apply(alt.layer(*layers), p, height)
+    scored = hdf[hdf["z"].notna()]
+    if not scored.empty:
+        layers.append(alt.Chart(scored).mark_point(
+            shape="diamond", filled=True, size=110, stroke=p.surface, strokeWidth=1.2).encode(
+            y=y_enc, x=alt.X("z:Q", scale=x_scale, title=None),
+            color=alt.Color("sign:N", scale=sign_scale, legend=None),
+            tooltip=[alt.Tooltip("label:N", title="group"),
+                     alt.Tooltip("z:Q", format="+.2f", title="mean z")]))
+    # fit-x: the width follows the column, but the height is the PLOT's, so
+    # each band is exactly one table row (a plain "fit" takes the axis and
+    # padding out of the bands and the rows drift).
+    chart = alt.layer(*layers).properties(
+        padding={"top": MACRO_HEAD_PX, "bottom": 4, "left": 4, "right": 10},
+        autosize=alt.AutoSizeParams(type="fit-x", contains="padding"))
+    return _apply(chart, p, plot_h)
 
 
 def macro_momentum(history, p: Palette, height: int = 340,
@@ -1692,9 +1737,16 @@ def macro_momentum(history, p: Palette, height: int = 340,
         return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_bar()),
                       p, height)
     df, tdf = pd.DataFrame(rows), pd.DataFrame(tot)
+    # One bar per quarter, filling its quarter's band: the latest reading in
+    # each quarter wins (the history pins a final point to the freshest month,
+    # which would otherwise stack a second bar on that quarter).
+    keep = set(tdf.groupby(tdf["month"].map(_quarter_start))["month"].max())
+    df, tdf = df[df["month"].isin(keep)], tdf[tdf["month"].isin(keep)]
 
     xfmt, xticks = _macro_time_format(list(tdf["month"]))
-    x_enc = alt.X("month:T", axis=alt.Axis(title=None, format=xfmt, tickCount=xticks))
+    axis = alt.Axis(title=None, format=xfmt, tickCount=xticks)
+    x_enc = alt.X("month:T", timeUnit="yearquarter", axis=axis)
+    x_mid = alt.X("month:T", timeUnit="yearquarter", bandPosition=0.5, axis=axis)
     present = [g for g in MACRO_GROUP_ORDER if g in set(df["group"])]
     grp_scale = alt.Scale(domain=present, range=[gcol[g] for g in present])
 
@@ -1708,7 +1760,7 @@ def macro_momentum(history, p: Palette, height: int = 340,
 
     zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
         color=p.baseline, strokeWidth=1).encode(y="y:Q")
-    bars = alt.Chart(df).mark_bar().encode(
+    bars = alt.Chart(df).mark_bar(width=alt.RelativeBandSize(0.82)).encode(
         x=x_enc,
         y=alt.Y("contrib:Q", stack="zero",
                 axis=alt.Axis(title="group contribution to Total z", format="+.1f")),
@@ -1716,13 +1768,13 @@ def macro_momentum(history, p: Palette, height: int = 340,
                         legend=alt.Legend(title=None, orient="bottom",
                                           direction="horizontal", labelFontSize=10)),
         order=alt.Order("group:N"),
-        tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
+        tooltip=[alt.Tooltip("month:T", title="data to", format="%b %Y"),
                  alt.Tooltip("group:N", title="group"),
                  alt.Tooltip("contrib:Q", format="+.2f", title="contribution")])
     line = alt.Chart(tdf).mark_line(strokeWidth=2, color=p.ink,
                                     interpolate="monotone").encode(
-        x=x_enc, y="total:Q",
-        tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
+        x=x_mid, y="total:Q",
+        tooltip=[alt.Tooltip("month:T", title="data to", format="%b %Y"),
                  alt.Tooltip("total:Q", format="+.2f", title="Total z")])
     layers = ([bands] if bands is not None else []) + [zero, bars, line]
     return _apply(alt.layer(*layers), p, height)
