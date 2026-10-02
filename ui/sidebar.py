@@ -6,7 +6,7 @@ from datetime import date
 
 import streamlit as st
 
-from core import rba_calendar, sizing
+from core import moves, rba_calendar, sizing
 from state import store
 from ui import components as C
 from ui import sources as src
@@ -45,8 +45,8 @@ def render(meetings: list[rba_calendar.Meeting], today: date) -> tuple[str, dict
         key, S = _meeting(meetings, today)
         as_of = _as_of(S, today)
         t = _trade(S)
-        _sizing(S, t, key, meetings, as_of)
-        _view(S)
+        horizon = _sizing(S, t, key, meetings, as_of)
+        _view(S, t, horizon)
         st.divider()
         _save(key, S)
         _recall(key)
@@ -153,7 +153,7 @@ def _trade(S: dict) -> dict:
     return t
 
 
-def _sizing(S: dict, t: dict, key: str, meetings, as_of: date) -> None:
+def _sizing(S: dict, t: dict, key: str, meetings, as_of: date) -> list:
     C.sub("Sizing")
     sz = S.setdefault("sizing", {})
     z1, z2 = st.columns(2)
@@ -216,10 +216,53 @@ def _sizing(S: dict, t: dict, key: str, meetings, as_of: date) -> None:
         value=sizing.snap_fraction(t.get("kelly_fraction")),
         format_func=sizing.fraction_label, on_change=mark_dirty)
     st.divider()
+    try:
+        return sizing.contract_horizon(by_key[sz["contract"]], meetings, as_of)
+    except (ValueError, TypeError, KeyError):
+        return []
 
 
-def _view(S: dict) -> None:
+def _view(S: dict, t: dict, horizon: list) -> None:
     pr = S.setdefault("probability", {})
+    multi = len(horizon) > 1
+    if multi:
+        pr.setdefault("mode", "decomposition")
+        C.sub("Your view, in moves")
+        if t.get("points") is None:
+            st.caption(f"Spans **{len(horizon)}** undecided meetings through "
+                       f"{horizon[-1].label}. Enter the points priced above to count them.")
+            return
+        mv = S.setdefault("moves", {})
+        n, size = len(horizon), float(t.get("size") or 25.0)
+        stored_bp = mv["moves"] * size if mv.get("moves") is not None else float(t["points"])
+        # Clamped into the widget's own bounds: Streamlit raises on a value
+        # outside [min, max], and the max shrinks whenever a meeting in the
+        # horizon is decided -- a view saved across three meetings reopened
+        # across two, or points typed above n moves, took the whole page down.
+        cap = float(n * size)
+        view_bp = st.number_input(
+            f"Cumulative bp by {horizon[-1].label}",
+            value=min(max(float(round(stored_bp, 2)), 0.0), cap),
+            min_value=0.0, max_value=cap, step=0.5, format="%.2f",
+            on_change=mark_dirty,
+            help="Basis points of cumulative moves you expect by this date. Opens on "
+                 "what the strip prices; moving it off that is your view.")
+        mv["moves"] = view_bp / size
+        mv["coherence"] = st.selectbox(
+            "Cycle coherence", list(moves.COHERENCE),
+            index=list(moves.COHERENCE).index(mv.get("coherence")
+                                              if mv.get("coherence") in moves.COHERENCE
+                                              else moves.DEFAULT_COHERENCE),
+            on_change=mark_dirty,
+            help="How much meetings move together. Widens the range, never shifts the mean.")
+        v = moves.summarise(float(t["points"]), size, n, mv["moves"],
+                            t.get("side", "fade"), mv["coherence"])
+        lo, hi = v.interval(0.80)
+        st.caption(f"**{v.moves_you * size:.1f}bp** vs **{v.points:.1f}bp** priced — "
+                   f"{v.moves_you:.2f} vs {v.moves_priced:.2f} moves across {n} meetings · "
+                   f"80% range **{lo}–{hi}** · {horizon[0].label} → {horizon[-1].label}")
+        return
+
     C.sub("Your probability")
     mode = st.radio("Mode", ["decomposition", "manual"],
                     index=0 if pr.get("mode", "decomposition") == "decomposition" else 1,

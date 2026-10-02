@@ -6,3 +6,6 @@ altair>=5.4
 plotly>=5.0
 requests>=2.32
 pytest>=8.0
+python-dotenv>=1.0
+tzdata>=2024.1          # zoneinfo has no tz database on Windows
+claude-agent-sdk>=0.2.160   # research agent (see data/agent.cli_path)

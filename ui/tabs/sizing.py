@@ -17,7 +17,13 @@ def render(ctx: Ctx) -> None:
         st.info("Price the trade first.")
         return
     s = M.summary
-    C.section("Sensitivity to your probability", "q is the only input you control")
+    C.section("Sensitivity to your probability",
+              "q is the only input you control" if M.moves is None
+              else "how the position responds to being wrong about how often it wins")
+    if M.moves is not None:
+        C.note(f"In moves mode q is the chance the position wins at all: "
+               f"{M.moves.moves_you:g} moves against {M.moves.moves_priced:.2f} priced clears "
+               f"breakeven {M.moves.p_win:.1%} of the time.")
     chart_col, table_col = st.columns([1.6, 1], gap="medium")
     with chart_col:
         st.altair_chart(charts.ev_curve(M.points, M.size, s.q, M.side, P),

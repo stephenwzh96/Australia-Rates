@@ -32,7 +32,9 @@ def trade_name(M) -> tuple[str, str]:
     if not M.priced:
         return title, "not priced yet"
     code = (M.contract_label or "").split(" — ")[0].strip()
-    bits = [f"{M.side} {M.size:g}bp {M.direction}", f"{M.points:g}bp priced"]
+    size = M.move_size if M.multi_move else M.size
+    pts = M.move_points if M.multi_move else M.points
+    bits = [f"{M.trade_side} {size:g}bp {M.direction}", f"{pts:g}bp priced"]
     if code and code.lower() != "custom dv01":
         bits.append(code)
     return title, " · ".join(bits)
@@ -74,10 +76,13 @@ def render(ctx: Ctx, root: Path) -> None:
 
 def _trade(M, P) -> None:
     _sec("The trade")
-    leg = "Receive" if (M.side == "fade") == (M.direction == "hike") else "Pay"
+    leg = "Receive" if (M.trade_side == "fade") == (M.direction == "hike") else "Pay"
     to_decision = (f"{M.days_to_meeting}d" if M.days_to_meeting > 0
                    else "today" if M.days_to_meeting == 0 else f"decided {M.meeting.end:%d %b}")
-    rows = [C.verdict_row("Leg", f"{leg} — {M.side} {M.size:g}bp {M.direction}", P.accent, emph=True),
+    desc = (f"{leg} — {M.trade_side} {M.moves.moves_you:g} of {M.moves.n} {M.moves.size:g}bp "
+            f"{M.direction}s by {M.horizon[-1].label}" if M.multi_move
+            else f"{leg} — {M.trade_side} {M.size:g}bp {M.direction}")
+    rows = [C.verdict_row("Leg", desc, P.accent, emph=True),
             C.verdict_row("To the decision", to_decision + (" · in blackout" if M.in_blackout else ""))]
     by_label = {x.label: x for x in M.exit_levels}
     for label, name in (("Target -- reassess", "Take profit"), ("Target -- partial", "Partial TP"),
@@ -104,7 +109,7 @@ def _view(M, P) -> None:
         C.verdict_row("Max gain / max loss", f"{s.gain:+g} / {s.loss:+g}  (1 : {s.rr:.1f})"),
         C.verdict_row("EV if the bloc votes yes",
                       f"{cond:+.2f}bp" if cond is not None and M.decomposition.p_centre > 0
-                      else "—", pnl_colour(cond or 0, P)),
+                      and not M.multi_move else "—", pnl_colour(cond or 0, P)),
     ])
 
 
@@ -148,7 +153,7 @@ def _watch(ctx: Ctx, P) -> None:
     if d.override_q is not None and abs(d.override_q - d.q) > 0.0005:
         rows.append(C.verdict_row("Recorded q", f"{d.override_q:.1%}", P.accent, emph=True))
     rows.append(C.verdict_row("Decision", f"{M.meeting.end:%a %d %b} · {M.direction} "
-                              f"{M.size:g}bp" + (" · SMP" if M.meeting.has_smp else ""),
+                              f"{M.move_size:g}bp" + (" · SMP" if M.meeting.has_smp else ""),
                               P.accent, emph=True))
     if M.days_to_meeting >= 0:
         rows.append(C.verdict_row("Tier 1 before the decision",
@@ -196,7 +201,8 @@ def header(ctx: Ctx) -> None:
         figures.append(("cash", f"{cash:.2f}%", None))
     if M.priced:
         s = M.summary
-        figures += [("priced", f"{M.points:g}bp", None),
+        pts = M.move_points if M.multi_move else M.points
+        figures += [("priced", f"{pts:g}bp", None),
                     ("mkt", f"{s.implied:.0%}", None),
                     ("you", f"{s.q:.1%}", P.accent),
                     ("EV", f"{s.ev:+.2f}bp", pnl_colour(s.ev, P))]

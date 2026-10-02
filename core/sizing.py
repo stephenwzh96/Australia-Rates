@@ -248,6 +248,19 @@ def contract_meeting(contract: Contract, meetings: Sequence[Meeting]) -> Meeting
     return next((m for eff, m in reversed(events) if eff <= start), None)
 
 
+def contract_horizon(contract: Contract, meetings: Sequence[Meeting],
+                     as_of: date) -> list[Meeting]:
+    """Every still-undecided meeting whose outcome lands in a contract's price:
+    each one up to and including the meeting the contract reads on."""
+    governing = contract_meeting(contract, meetings)
+    if governing is None:
+        return []
+    last = _contracts.effective_date(governing.end)
+    return sorted((m for m in meetings
+                   if m.end >= as_of and _contracts.effective_date(m.end) <= last),
+                  key=lambda m: m.end)
+
+
 def contract_for_meeting(meeting: Meeting, meetings: Sequence[Meeting], anchor: date,
                          kind: str = "ib") -> Contract | None:
     """The nearest contract of `kind` whose price reads on `meeting` -- what a

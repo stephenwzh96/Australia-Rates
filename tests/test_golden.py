@@ -467,11 +467,11 @@ def test_rate_sourced_vol_is_not_divided_by_capture():
         next(m for m in rba_calendar.DEFAULT_MEETINGS if m.end == date(2027, 3, 23)))
 
     def build(contract_key):
-        st = store.new_meeting(march, date(2027, 1, 4))
+        st = store.new_meeting(march, date(2027, 2, 15))
         st["trade"].update(points=8.0, size=25.0)
         st["sizing"]["contract"] = contract_key
         st["path"].update({"target_level": 2.0, "stop_level": 14.0})
-        return model.build(st, as_of=date(2027, 1, 4), rate_history=hist)
+        return model.build(st, as_of=date(2027, 2, 15), rate_history=hist)
 
     partial = build("ib:2027-03")       # 8 of 31 days -> capture 0.258
     full = build("ib:2027-04")          # wholly after the decision -> 1.0

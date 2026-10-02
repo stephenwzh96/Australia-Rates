@@ -38,6 +38,11 @@ def render(ctx: Ctx) -> None:
         st.info("Price the trade first.")
         return
     C.section("Path risk", "levels are the quoted bp priced, not the collapsed payoff")
+    if M.multi_move:
+        C.note(f"Levels run 0 to {M.level_size:g}bp ({M.moves.n} × {M.moves.size:g}bp). A "
+               f"'move' is any one meeting moving, {M.level_q:.0%} on your view of "
+               f"{M.moves.moves_you:g}; the two-point terminal is exact in expectation but "
+               "overstates how often the level ends at an extreme.")
     if M.ladder:
         st.altair_chart(charts.mtm_ladder(M.ladder, ctx.P), width="stretch", theme=None)
 
@@ -55,7 +60,7 @@ def _level_inputs(ctx: Ctx, pth: dict) -> None:
         "", "Target and stop are reassess levels you choose inside the market bounds; "
         "the partial target banks a share on the way; the hard floor is a discipline line, "
         "not a simulation barrier.", "", "exits"))
-    default_target, default_stop = pathmod.reassess_defaults(M.points, M.size, M.side)
+    default_target, default_stop = pathmod.reassess_defaults(M.level_points, M.level_size, M.trade_side)
     x1, x2, x3, x4 = st.columns(4)
     with x1:
         pth["target_level"] = st.number_input(
@@ -111,7 +116,7 @@ def _exit_table(ctx: Ctx) -> None:
         return
     has_price = any(x.price is not None for x in M.exit_levels)
     has_pnl = any(x.pnl is not None for x in M.exit_levels)
-    headers = ["Exit", "Implied", "Priced"]
+    headers = ["Exit", "Moves" if M.multi_move else "Implied", "Priced"]
     headers += ["Price"] if has_price else []
     headers += ["P&L"] + (["P&L (A$)"] if has_pnl else [])
     pnl_col = headers.index("P&L")
@@ -119,7 +124,8 @@ def _exit_table(ctx: Ctx) -> None:
     for i, x in enumerate(M.exit_levels):
         if x.is_entry:
             marks.append(i)
-        row = [x.label, f"{x.implied:.0%}", f"{x.level:g}bp"]
+        row = [x.label, f"{x.implied * M.moves.n:.2f}" if M.multi_move else f"{x.implied:.0%}",
+               f"{x.level:g}bp"]
         if has_price:
             row.append("—" if x.price is None else f"{x.price:.4f}")
         row.append("—" if x.is_entry else f"{x.mtm:+g}bp")
@@ -199,7 +205,7 @@ def _decomposition(ctx: Ctx, pth: dict) -> None:
             msg = (f"Counts sum to {stp.counts_total:g}, not {stp.trials:g}. "
                    if not stp.counts_sum_correctly else "")
             st.warning(msg + f"They imply P(move) = {stp.implied_p_move:.1%}, not the "
-                       f"{M.q:.1%} these levels are scored against. Flagged, not rescaled.")
+                       f"{M.level_q:.1%} these levels are scored against. Flagged, not rescaled.")
 
 
 def _monte_carlo(ctx: Ctx, pth: dict) -> None:
@@ -275,7 +281,7 @@ def _monte_carlo(ctx: Ctx, pth: dict) -> None:
         i = index.get(e.when)
         if i is not None and e.release and e.weight in selected and e.release not in release_days.get(i, []):
             release_days.setdefault(i, []).append(e.release)
-    st.altair_chart(charts.mc_fan_chart(mc, M.points, M.size, M.side, P,
+    st.altair_chart(charts.mc_fan_chart(mc, M.level_points, M.level_size, M.trade_side, P,
                                         height=420, release_days=release_days or None,
                                         family_colour=RELEASE_FAMILY_COLOUR),
                     width="stretch", theme=None)
@@ -284,7 +290,7 @@ def _monte_carlo(ctx: Ctx, pth: dict) -> None:
         C.legend([(FAMILY_NAME[f], FAMILY_SOLID[f]) for f in RELEASE_FAMILIES
                   if any(RELEASE_FAMILY.get(n) == f for n in shown)])
 
-    stops, targets = _sweeps(M.points, M.size, M.side, M.q,
+    stops, targets = _sweeps(M.level_points, M.level_size, M.trade_side, M.level_q,
                              pth["target_level"], pth["stop_level"], mc.vol, mc.trading_days,
                              pth.get("partial_target_level"), float(pth.get("partial_share", 0.5)))
     s1, s2 = st.columns(2, gap="medium")

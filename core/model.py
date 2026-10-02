@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any
 
-from . import (contracts, econ_calendar, kills, montecarlo, path,
+from . import (contracts, econ_calendar, kills, montecarlo, moves as moves_mod, path,
                pricing, rba_calendar, sizing, volatility, votes)
 from .rba_calendar import Meeting
 
@@ -85,10 +85,49 @@ class Model:
     calendar_events: list[econ_calendar.Event]
 
     warnings: list[str] = field(default_factory=list)
+    moves: moves_mod.MovesSummary | None = None
+    horizon: list[Meeting] = field(default_factory=list)
 
     @property
     def priced(self) -> bool:
         return self.summary is not None
+
+    @property
+    def multi_move(self) -> bool:
+        """Is this trade a count of moves rather than one yes/no decision?"""
+        return self.moves is not None
+
+    @property
+    def move_size(self) -> float:
+        """The size of ONE RBA move, never the collapsed scale."""
+        return self.moves.size if self.moves is not None else self.size
+
+    @property
+    def move_points(self) -> float | None:
+        """The bp the market prices by the horizon. See `move_size`."""
+        return self.moves.points if self.moves is not None else self.points
+
+    @property
+    def trade_side(self) -> pricing.Side:
+        """The side the USER took (the effective binary bet is always long)."""
+        return self.moves.side if self.moves is not None else self.side
+
+    @property
+    def level_points(self) -> float | None:
+        """Entry as the MARKET quotes it, for anything in Step 6."""
+        return self.moves.points if self.moves is not None else self.points
+
+    @property
+    def level_size(self) -> float:
+        """The full span of the priced level: one move, or n of them."""
+        return self.moves.size * self.moves.n if self.moves is not None else self.size
+
+    @property
+    def level_q(self) -> float | None:
+        """P(any one meeting moves) -- the terminal split Step 6 runs on."""
+        if self.moves is None:
+            return self.q
+        return self.moves.moves_you / self.moves.n if self.moves.n else 0.0
 
     @property
     def conditional_ev_at(self) -> float | None:
@@ -103,6 +142,26 @@ def _f(x: Any) -> float | None:
         return None if x is None else float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _horizon(state: dict[str, Any], meetings: list[Meeting], when: date) -> list[Meeting]:
+    """The undecided meetings the sized contract's price actually carries."""
+    key = (state.get("sizing") or {}).get("contract")
+    if not key:
+        return []
+    try:
+        return sizing.contract_horizon(sizing.contract_for(key, when), meetings, when)
+    except (ValueError, TypeError, KeyError):
+        return []
+
+
+def _with(grid, value: float | None) -> list[float]:
+    """`grid` plus `value`, sorted, without a near-duplicate -- so every table
+    carries a row for the live input as well as its saved grid."""
+    out = [float(g) for g in (grid or [])]
+    if value is not None and 0.0 <= value <= 1.0 and not any(abs(g - value) < 1e-9 for g in out):
+        out.append(float(value))
+    return sorted(out)
 
 
 def build(state: dict[str, Any],
@@ -173,6 +232,30 @@ def build(state: dict[str, Any],
     decomposition = votes.decompose(p_bloc, p_centre, override)
     q = override if prob.get("mode") == "manual" and override is not None else decomposition.q
 
+    # A contract whose price carries several undecided meetings (an IB month
+    # past the next decision, or an IR bill spanning one or two of them) is a
+    # count of moves, not one yes/no: the view is held in moves and collapsed
+    # to an equivalent binary bet for everything downstream.
+    horizon = _horizon(state, meetings, when)
+    moves_view = None
+    if len(horizon) > 1 and points is not None:
+        mv = state.get("moves", {})
+        n_moves = _f(mv.get("moves"))
+        if n_moves is None:
+            n_moves = points / size          # open on the market's own count
+        moves_view = moves_mod.summarise(points, size, len(horizon), n_moves, side,
+                                         mv.get("coherence") or moves_mod.DEFAULT_COHERENCE)
+        points, size, q = moves_view.effective
+        side = "back"                        # the effective bet is always long
+
+    level_points, level_size, level_q = points, size, q
+    level_side: pricing.Side = side
+    if moves_view is not None:
+        level_points = moves_view.points
+        level_size = moves_view.size * moves_view.n
+        level_q = moves_view.moves_you / moves_view.n if moves_view.n else 0.0
+        level_side = moves_view.side
+
     warnings: list[str] = []
     if raw_size is not None and raw_size <= 0:
         warnings.append(
@@ -217,6 +300,12 @@ def build(state: dict[str, Any],
     # left at 1 and a warning is raised instead of quoting a wild number.
     capture = contracts.contract_capture_share(
         contract_spec.kind, contract_spec.month, meeting.end)
+    if moves_view is not None and horizon:
+        shares = [contracts.contract_capture_share(contract_spec.kind, contract_spec.month, m.end)
+                  for m in horizon]
+        capture = sum(shares) / len(shares)
+    cap_of = (f"an average move across the {len(horizon)} meetings to {meeting.label}"
+              if moves_view is not None and horizon else f"a {meeting.label} move")
     # IR capture is binary by construction -- one fix, so the contract either
     # sees the decision or it does not (see `core.contracts`). A 0.0 there is
     # not "a bit of the move", it is the wrong contract entirely.
@@ -224,14 +313,14 @@ def build(state: dict[str, Any],
     dv01 = quoted_dv01 * capture if capture_usable else quoted_dv01
     if capture_usable and capture < 1.0 - 1e-9:
         warnings.append(
-            f"{contract_label} captures {capture:.1%} of a {meeting.label} move, so its "
+            f"{contract_label} captures {capture:.1%} of {cap_of}, so its "
             f"DV01 per bp of the event is corrected from A${quoted_dv01:,.2f} to "
             f"A${dv01:,.2f} - lot counts and the exit-map price column below use the "
             "corrected figure."
         )
     elif not capture_usable:
         warnings.append(
-            f"{contract_label} captures only {capture:.1%} of a {meeting.label} move - "
+            f"{contract_label} captures only {capture:.1%} of {cap_of} - "
             f"below the {contracts.CAPTURE_WARNING_THRESHOLD:.0%} threshold at which a "
             "contract stops expressing the view. Sizing is left uncorrected and the "
             "simulation is skipped; choose a contract that actually spans the decision."
@@ -250,10 +339,13 @@ def build(state: dict[str, Any],
     if points is not None:
         summary = pricing.summarise(points, size, q, side, direction, kf)
         outcomes = pricing.terminal_outcomes(points, size, side, direction)
-        sens = pricing.sensitivity(points, size, side, state.get("sensitivity_grid"))
+        sens = pricing.sensitivity(points, size, side,
+                                   _with(state.get("sensitivity_grid") or pricing.DEFAULT_Q_GRID, q))
         kelly_rows = pricing.kelly_table(points, size, side,
-                                         state.get("kelly_grid", (0.10, 0.15, 0.20, 0.25)), kf)
-        ladder_rows = path.ladder(points, size, pth.get("ladder_levels") or None, side)
+                                         _with(state.get("kelly_grid", (0.10, 0.15, 0.20, 0.25)), q),
+                                         kf)
+        ladder_rows = path.ladder(level_points, level_size, pth.get("ladder_levels") or None,
+                                  level_side)
         sizing_ladder = sizing.build_ladder(
             points, size, q, side, max_drawdown, dv01, daily_limit, bets_per_year,
             selected=sizing.snap_fraction(kf))
@@ -265,7 +357,8 @@ def build(state: dict[str, Any],
                 f"A${daily_limit:,.0f} daily limit - that is a breach, not a size."
             )
         conditional = votes.conditional_ev(points, size, side,
-                                           state.get("centre_grid", (0.20, 0.30, 0.40, 0.50)))
+                                           _with(state.get("centre_grid", (0.20, 0.30, 0.40, 0.50)),
+                                                 decomposition.p_centre))
 
         # The exit map prices every level against the size actually being run,
         # so the dollar column moves with the Kelly rung selected in Step 5
@@ -283,7 +376,7 @@ def build(state: dict[str, Any],
         partial_target_level = _f(pth.get("partial_target_level")) or None
         partial_share = _f(pth.get("partial_share")) or 0.5
         exit_levels = path.exit_map(
-            points, size, side, direction,
+            level_points, level_size, level_side, direction,
             reassess_target=target_level, reassess_stop=stop_level,
             position_dv01=selected_rung.position_dv01 if selected_rung else None,
             current_price=_f(pth.get("current_price")),
@@ -296,7 +389,7 @@ def build(state: dict[str, Any],
             if x.misplaced:
                 warnings.append(
                     f"{x.label} sits at {x.level:g}bp, which is {x.mtm:+g}bp against a "
-                    f"{points:g}bp entry - a {x.role} cannot sit there. It is most likely "
+                    f"{level_points:g}bp entry - a {x.role} cannot sit there. It is most likely "
                     "carried over from a meeting with a different entry."
                 )
 
@@ -359,7 +452,8 @@ def build(state: dict[str, Any],
                 vol_estimate = replace(
                     vol_estimate, schedule=tuple(vol_schedule.sigmas))
             monte_carlo = montecarlo.simulate_exit_paths(
-                points, size, q, target_level, stop_level, vol_estimate, trading_days,
+                level_points, level_size, level_q, target_level, stop_level, vol_estimate,
+                trading_days,
                 vol_uncertainty=bool(pth.get("vol_uncertainty")), days=sim_days, when=when,
                 partial_target_level=partial_target_level, partial_share=partial_share)
 
@@ -376,18 +470,23 @@ def build(state: dict[str, Any],
         _count_keys = ("no_move_target_hit", "no_move_never_breached",
                        "no_move_falsely_stopped", "move_target_hit",
                        "move_stopped_early", "move_gapped_through")
-        any_counts = any((_f(pth.get(k)) or 0.0) > 0 for k in _count_keys)
+        # The simulation's counts whenever it ran; the saved ones are only the
+        # hand-entered fallback. Reading them first let the verdict and the
+        # export score a stale split until the Path tab happened to render.
+        counts = (monte_carlo.counts if monte_carlo is not None
+                  else {k: _f(pth.get(k)) or 0.0 for k in _count_keys})
+        any_counts = any((counts.get(k) or 0.0) > 0 for k in _count_keys)
         if stop_level is not None and any_counts:
             stop = path.stop_analysis(
-                points, size, q, stop_level,
-                _f(pth.get("no_move_never_breached")) or 0.0,
-                _f(pth.get("no_move_falsely_stopped")) or 0.0,
-                _f(pth.get("move_stopped_early")) or 0.0,
-                _f(pth.get("move_gapped_through")) or 0.0,
-                side,
+                level_points, level_size, level_q, stop_level,
+                counts["no_move_never_breached"],
+                counts["no_move_falsely_stopped"],
+                counts["move_stopped_early"],
+                counts["move_gapped_through"],
+                level_side,
                 target_level=target_level,
-                no_move_target_hit=_f(pth.get("no_move_target_hit")) or 0.0,
-                move_target_hit=_f(pth.get("move_target_hit")) or 0.0,
+                no_move_target_hit=counts["no_move_target_hit"],
+                move_target_hit=counts["move_target_hit"],
                 partial_target_level=partial_target_level,
                 partial_share=partial_share,
                 partial_reach_full=(monte_carlo.frac_reached_full if monte_carlo else 1.0),
@@ -400,7 +499,7 @@ def build(state: dict[str, Any],
                 warnings.append(
                     f"Stop-path counts imply P(move) = {stop.implied_p_move:.1%} "
                     f"({stop.actual_move_count:g} of {stop.counts_total:g}), "
-                    f"not your q of {q:.1%}."
+                    f"not the {level_q:.1%} these levels are scored against."
                 )
 
     roster = votes.voters_from_dicts(state.get("roster") or [])
@@ -410,10 +509,6 @@ def build(state: dict[str, Any],
 
     criteria = kills.from_dicts(state.get("kill_criteria", []), rba_values, rba_units)
     assessment = kills.assess(criteria)
-    if assessment.is_stale:
-        warnings.append(
-            f"{assessment.count} kill criteria live - the probability estimate is stale."
-        )
 
     caps = contracts.capture(meeting.end, size)
     blackout = rba_calendar.blackout_window(meeting)
@@ -441,4 +536,5 @@ def build(state: dict[str, Any],
         previous_meeting=previous_meeting,
         calendar_events=calendar_events,
         warnings=warnings,
+        moves=moves_view, horizon=horizon,
     )

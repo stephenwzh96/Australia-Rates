@@ -159,32 +159,40 @@ def _interbank(ctx: Ctx, sp, spot: float, live, asof_fig: C.Fig) -> None:
             C.note("Dashed line, hollow dots = solved off a stale or ambiguous contract.")
 
     mine = sp.step_for(M.meeting.key)
-    C.section(f"{M.meeting.label} — live vs the number you are sizing on")
+    cumulative = len(M.horizon) > 1
+    C.section((f"Through {M.meeting.label}" if cumulative else M.meeting.label)
+              + " — live vs the number you are sizing on")
     if mine is None:
         st.info("This meeting falls outside the quoted strip.")
     else:
+        live_bp = mine.cum_bp if cumulative else mine.step_bp
         size = float(t.get("size") or 25)
         typed = t.get("points")
         figs, act = st.columns([3, 1], vertical_alignment="center")
         with figs:
             C.board([
-                C.Fig("Priced now", f"{mine.step_bp:+.2f}bp",
-                      f"{mine.prob:.1%} of a {size:.0f}bp move"),
+                C.Fig("Priced now", f"{live_bp:+.2f}bp",
+                      f"{live_bp / size:+.2f} moves of {size:.0f}bp" if cumulative
+                      else f"{mine.prob:.1%} of a {size:.0f}bp move"),
                 C.Fig("You have typed", f"{typed:+.2f}bp" if typed is not None else "--",
                       "sidebar → Points priced"),
-                *([C.Fig("Difference", f"{mine.step_bp - float(typed):+.2f}bp", "live minus typed",
-                         pnl_colour(mine.step_bp - float(typed), P))] if typed is not None else []),
+                *([C.Fig("Difference", f"{live_bp - float(typed):+.2f}bp", "live minus typed",
+                         pnl_colour(live_bp - float(typed), P))] if typed is not None else []),
             ])
         with act:
             if st.button("Use the live number", type="primary", width="stretch"):
-                t["points"] = round(abs(mine.step_bp), 2)
+                t["points"] = round(abs(live_bp), 2)
                 mark_dirty()
                 st.rerun()
-        C.note(f"Read off {mine.code} — "
-               + (f"the following month, wholly at the new rate, because {mine.month:%b}'s "
-                  f"contract captures only {mine.capture_share:.0%}." if mine.is_clean else
-                  f"the meeting month, capturing {mine.capture_share:.0%} "
-                  f"({mine.days_after} of {mine.days_in_month} days) at the new rate."))
+        if cumulative:
+            C.note(f"Cumulative move from spot across the {len(M.horizon)} undecided meetings "
+                   f"in {M.contract_label}'s window.")
+        else:
+            C.note(f"Read off {mine.code} — "
+                   + (f"the following month, wholly at the new rate, because {mine.month:%b}'s "
+                      f"contract captures only {mine.capture_share:.0%}." if mine.is_clean else
+                      f"the meeting month, capturing {mine.capture_share:.0%} "
+                      f"({mine.days_after} of {mine.days_in_month} days) at the new rate."))
 
     sc1, sc2 = st.columns(2, gap="large")
     with sc1:
