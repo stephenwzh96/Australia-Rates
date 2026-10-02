@@ -15,12 +15,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from core import clock, econ_calendar
+from core import clock, contracts, econ_calendar, release_prep, release_research
 from core import employment as empmod
 from core import inflation as infl
 from core import macro as macromod
 from data import abs as absmod
 from data import abs_sdmx
+from data import agent as claude_agent
+from data import wb_agent
 from data import asx, rba
 from data import cache as datacache
 from data.common import Observation
@@ -42,6 +44,22 @@ NAB_CAPACITY = "NAB capacity utilisation"
 # mean of the raw prints (NAB's own convention; it pins the Jun 2020 trough at
 # 74.1-74.2 exactly), derived in-app so it extends as each print lands.
 CAPACITY_MA_WINDOW = 3
+
+
+# ------------------------------------------------------------------ research agent
+
+#: The research panels (release consensus, speech roundup, street calls, trade
+#: recs) run on either agent CLI, exactly as the US version offers them.
+RESEARCH_AGENTS = {"claude": claude_agent, "workbuddy": wb_agent}
+RESEARCH_AGENT_LABELS = {"claude": "Claude SDK", "workbuddy": "WorkBuddy SDK"}
+RESEARCH_AGENT_MODELS = {"claude": "opus", "workbuddy": "hy4-preview"}
+RESEARCH_AGENT_MODEL_CHOICES = {
+    "claude": ["opus", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"],
+    "workbuddy": ["hy4-preview", "balanced-model", "custom-local:deepseek-v4-flash",
+                  "custom-local:deepseek-v4-pro", "hy3", "kimi-k3"],
+}
+DEFAULT_RESEARCH_BACKEND = "workbuddy"
+RELEASE_RESEARCH_TIMEOUT = 480
 
 
 # ------------------------------------------------------------------ market
@@ -404,6 +422,59 @@ def next_release(release: str, today: date, horizon_days: int = 200) -> date | N
         today, today + timedelta(days=horizon_days)) if e.release == release), None)
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
+def fetch_release_research(release: str, when: date, series: tuple[str, ...],
+                           backend: str, model: str,
+                           timeout: int = RELEASE_RESEARCH_TIMEOUT, retry: int = 0):
+    """One consensus search, cached on the exact question (billable, slow)."""
+    specs = [release_prep.SPECS[k] for k in series if k in release_prep.SPECS]
+    if not specs:
+        return release_research.Research(
+            release, when, error="Nothing in this report has a spec to price.")
+    raw, err = RESEARCH_AGENTS[backend].research(
+        release_research.prompt(release, when, specs),
+        release_research.SYSTEM, model=model or None, timeout=timeout)
+    if err:
+        return release_research.Research(release, when, error=err)
+    return release_research.parse(raw, release, when, specs)
+
+
+def playbook_market_level(ctx) -> float | None:
+    """The strip's priced level for this meeting in bp, or None when it is not a
+    clean read: the step the Curve tab shows, measured from the same spot
+    (a typed override included), or the cumulative move through the meeting
+    when the sized contract carries several."""
+    try:
+        sp, M = ctx.path, ctx.M
+        if sp is None or not sp.ok:
+            return None
+        step = sp.step_for(M.meeting.key)
+        if step is None or not step.reliable:
+            return None
+        return float(step.cum_bp if M.multi_move else step.step_bp)
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def playbook_anchor_price(ctx, market_level_bp: float | None = None) -> float | None:
+    """The following-month IB price consistent with the priced level in play:
+    the contract wholly at the new rate, shifted by the gap between the strip's
+    own level and the one the card is repriced from."""
+    try:
+        end = ctx.M.meeting.end
+        far = contracts.add_month(date(end.year, end.month, 1))
+        price = next((float(q.price) for q in ctx.market.ib_quotes
+                      if q.ok and q.month == far), None)
+        if price is None:
+            return None
+        strip = playbook_market_level(ctx)
+        if market_level_bp is not None and strip is not None:
+            return price + (strip - market_level_bp) / 100.0
+        return price
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
 # ------------------------------------------------------------------ refresh
 
 def refresh_all_sources() -> None:
@@ -413,6 +484,8 @@ def refresh_all_sources() -> None:
                cash_rate_history, cash_target_history, kill_series_history,
                policy_changes, abs_series, rba_table, gross_flows, cpi_series,
                cpi_classification, flow_series, fetch_macro_bundle):
+        fn.clear()
+    for fn in (fetch_release_research,):
         fn.clear()
     for extra in _EXTRA_CLEARS:
         extra()

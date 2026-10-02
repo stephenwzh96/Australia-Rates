@@ -1655,3 +1655,92 @@ def macro_momentum(history, p: Palette, height: int = 340,
         tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
                  alt.Tooltip("total:Q", format="+.2f", title="Total z")])
     return _apply(alt.layer(zero, bars, line), p, height)
+
+
+# ---------------------------------------------------------------------------
+# Release playbook
+# ---------------------------------------------------------------------------
+
+def playbook_levels(
+    outcomes: list, entry: float, market_bp: float | None,
+    fair: float, size: float, p: Palette,
+    receive_level: float | None = None,
+    height: int = 150,
+) -> alt.LayerChart:
+    """Horizontal bp axis (0–size) with pay, receive, market, fair and the
+    three post-print scenario levels — one glance at the risk/reward layout."""
+    rows: list[dict] = []
+    for label, level, kind in (
+        ("Pay", entry, "entry"),
+        ("Receive", receive_level, "receive"),
+        ("Market", market_bp, "market"),
+        ("Fair (q)", fair, "reference"),
+    ):
+        if level is None:
+            continue
+        rows.append({"label": label, "level": level, "kind": kind, "row": 0.0})
+    for o in outcomes:
+        if o.action == "no move set":
+            continue
+        rows.append({"label": o.name.title(), "level": o.new_points,
+                     "kind": "scenario", "row": 0.62})
+    df = pd.DataFrame(rows)
+
+    colour_map = alt.Scale(
+        domain=["entry", "receive", "market", "scenario", "reference"],
+        range=[p.accent, p.warning, p.muted, p.negative, p.positive])
+    base = alt.Chart(df).encode(
+        alt.X("level:Q", scale=alt.Scale(domain=[0, size], nice=False),
+              title="bp priced on the event", axis=alt.Axis(tickCount=6)),
+        alt.Y("row:Q", scale=alt.Scale(domain=[0, 1], nice=False), axis=None),
+        alt.Color("kind:N", scale=colour_map, legend=None),
+    )
+    dots = base.mark_circle(size=72).encode(
+        alt.Tooltip(["label:N", "level:Q"]),
+    )
+    ref_text = base.mark_text(
+        align="left", dx=6, dy=-9, fontSize=10,
+    ).encode(alt.Text("label:N")).transform_filter("datum.row == 0")
+    scen_text = base.mark_text(
+        align="left", dx=6, dy=12, fontSize=10,
+    ).encode(alt.Text("label:N")).transform_filter("datum.row > 0")
+    chart = dots + ref_text + scen_text
+    return _apply(chart, p, height)
+
+
+def playbook_pnl(
+    outcomes: list, p: Palette,
+    height: int = 150,
+) -> alt.LayerChart:
+    """Horizontal bars — $ P&L of the planned position under each scenario,
+    compact enough to sit beside the level chart."""
+    rows = []
+    for o in outcomes:
+        if o.action == "no move set":
+            continue
+        pnl = o.pnl_usd or 0.0
+        rows.append({"label": o.name.title(), "pnl": pnl,
+                     "money": f"{'-' if pnl < 0 else '+'}A${abs(pnl):,.0f}",
+                     "sign": "pos" if pnl >= 0 else "neg"})
+    df = pd.DataFrame(rows)
+
+    bar_colour = alt.Scale(
+        domain=["pos", "neg"], range=[p.positive, p.negative])
+    base = alt.Chart(df).encode(
+            # d3's `$` emits a bare dollar sign, so the axis is titled in A$ and
+        # the labels are formatted in pandas.
+        alt.X("pnl:Q", title="A$ P&L at Kelly size",
+              axis=alt.Axis(format="~s", tickCount=5)),
+        alt.Y("label:N", title=None, sort=None),
+        tooltip=[alt.Tooltip("label:N"), alt.Tooltip("money:N", title="P&L")],
+    )
+    bars = base.mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
+        alt.Color("sign:N", scale=bar_colour, legend=None),
+    )
+    out_text = base.mark_text(align="left", dx=4, fontSize=11, fontWeight=500).encode(
+        alt.Text("money:N"),
+        alt.Color(value=p.ink),
+    ).transform_filter("datum.pnl != 0")
+
+    chart = (bars + out_text).configure_axisX(grid=False)
+    return _apply(chart, p, height)
