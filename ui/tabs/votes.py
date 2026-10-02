@@ -260,30 +260,30 @@ def _published(ctx: Ctx) -> None:
               "" if last_split is None else f"{last_split.dissent_side or 'direction not given'}",
               None if last_split is None else (P.negative if last_split.dissent_side == "hawkish"
                                                else P.positive))])
-    chart_col, table_col = st.columns([1.35, 1], gap="large")
-    with chart_col:
-        steps, squares = charts.published_votes(decisions, P)
-        st.altair_chart(steps, width="stretch", theme=None)
-        st.altair_chart(squares, width="stretch", theme=None)
-        C.legend([("hike", P.negative), ("hold", P.muted), ("cut", P.positive),
-                  ("dissent (outlined)", P.ink)])
-    with table_col:
+    # Full width: the ballot gains a column every meeting, and beside a table
+    # it would be crushed long before the record is a year old.
+    steps, ballot = charts.published_votes(decisions, P)
+    st.altair_chart(steps, width="stretch", theme=None)
+    st.altair_chart(ballot, width="stretch", theme=None)
+    C.legend([("hike", P.negative), ("hold", P.muted), ("cut", P.positive),
+              ("dissent, coloured by its vote", P.ink_secondary, "○")])
+    with st.expander(f"Decision record · {len(decisions)} meetings"):
         rows, colours = [], {}
         for i, d in enumerate(reversed(decisions)):
-            move = ("—" if d.action == "hold" else f"{d.change_bp:+d}bp")
-            dissent = ("" if not d.dissents else
-                       f"{d.dissents} {d.dissent_side}".strip())
-            rows.append([f"{d.when:%d %b %Y}", ACTION_WORD[d.action], move, f"{d.level:.2f}",
-                         d.split if d.votes else "not published", dissent or "—"])
+            move = (f"{ACTION_WORD[d.action]} to {d.level:.2f}" if d.action == "hold"
+                    else f"{ACTION_WORD[d.action]} {abs(d.change_bp)} → {d.level:.2f}")
+            rows.append([f"{d.when:%d %b %y}", move, d.split if d.votes else "—",
+                         f"{d.dissents} {d.dissent_side}".strip() if d.dissents else "—"])
+            colours[(i, 1)] = {"hike": P.negative, "cut": P.positive}.get(d.action, P.muted)
             if d.dissent_side:
-                colours[(i, 5)] = P.negative if d.dissent_side == "hawkish" else P.positive
-        C.table(["Meeting", "Decision", "Move", "Cash", "Vote", "Dissent"], rows,
-                numeric=(2, 3), colours=colours)
+                colours[(i, 3)] = P.negative if d.dissent_side == "hawkish" else P.positive
+        C.table(["Meeting", "Decision", "Vote", "Dissent"], rows, numeric=(2,),
+                colours=colours, nowrap=True)
     a = M.arithmetic
     C.note(f"Your roster: {a.mover_count} move candidate{'' if a.mover_count == 1 else 's'} "
            f"for a {M.direction}, {a.votes_needed} needed. The Board last split "
            + ("never" if last_split is None else
               f"{last_split.split} in {last_split.when:%B %Y} ({last_split.votes.get(last_split.action, 0)} "
               f"for the {last_split.action}, {last_split.dissents} {last_split.dissent_side or 'against'})")
-           + ". The vote has been published since July 2025; earlier Board decisions show "
-             "\"not published\".")
+           + ". The split has been published since July 2025; earlier decisions show “n/p” "
+             "and “—”.")

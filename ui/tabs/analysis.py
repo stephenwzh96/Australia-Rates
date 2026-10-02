@@ -164,8 +164,10 @@ def _headline(res, ctx: Ctx) -> None:
     if math.isfinite(prior) and math.isfinite(prior_u):
         base = min(max(prior_u, prior - 0.05), prior + 0.0499)
         up_by, down_by = prior + 0.05 - base, base - (prior - 0.05)
-        chips.append((f"Rounding: +{up_by:.2f} prints {prior + 0.1:.2f}% · "
-                      f"−{down_by:.2f} prints {prior - 0.1:.2f}%", None))
+        # Three decimals inside a hundredth: "+0.00" would hide how close it is.
+        fmt = lambda x: f"{x:.3f}" if x < 0.01 else f"{x:.2f}"          # noqa: E731
+        chips.append((f"Rounding: +{fmt(up_by)} prints {prior + 0.1:.2f}% · "
+                      f"−{fmt(down_by)} prints {prior - 0.1:.2f}%", None))
     actual = L.get("actual")
     if actual and math.isfinite(actual.get("new_print", float("nan"))):
         chips.append((f"Actual: {actual['new_u']:.2f}% (printed {actual['new_print']:.2f}%) · "

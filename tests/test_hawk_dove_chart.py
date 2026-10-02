@@ -172,18 +172,17 @@ def test_the_no_vote_gutter_tag_is_gone():
         "the lowercase 'no vote' gutter tag is still in the spec"
 
 
-def test_voter_names_are_highlighted_and_the_non_voter_ink_is_readable():
-    """The names layer carries a colour scale keyed on the row. A voter takes
-    `voter_ink` (a saturated green); a non-voter takes `ink_secondary`
-    (readable body text, not the muted grey). The two ends must differ."""
+def test_member_names_take_the_ink_since_every_member_votes():
+    """The US chart greens voters against greyed non-voters. Every Board
+    member votes, so the green would mark nothing: names take the ink, and
+    a (hypothetical) non-voter row would still read in `ink_secondary`."""
     spec = charts.hawk_dove_transition(_recs(), DARK).to_dict()
     scale = _scale_by_domain(spec, ["voter", "non-voter"])
     assert scale, "no voter/non-voter colour scale found"
     rng = scale["range"]
-    assert rng[0] == DARK.voter_ink, rng
+    assert rng[0] == DARK.ink, rng
     assert rng[1] == DARK.ink_secondary, rng
-    assert rng[0] != rng[1], "voter and non-voter colours are the same"
-    assert rng[0] != DARK.muted, "voter ink collapsed to muted grey"
+    assert rng[0] != DARK.muted, "name ink collapsed to muted grey"
 
 
 def test_change_of_scale_is_red_and_blue_only():

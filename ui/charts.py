@@ -4267,8 +4267,10 @@ def hawk_dove_transition(records, p: Palette, height: int | None = None,
 
     travel_scale = alt.Scale(domain=["hawkish", "dovish", "flat"],
                              range=[p.negative, p.positive, p.ink_secondary])
+    # Every Board member votes, so the US voter-green would mark nothing:
+    # names take the ink, and green stays free to mean "dovish".
     name_scale = alt.Scale(domain=["voter", "non-voter"],
-                           range=[p.voter_ink, p.ink_secondary])
+                           range=[p.ink, p.ink_secondary])
     y_enc = alt.Y("name:N", sort=order,
                   scale=alt.Scale(padding=6),
                   axis=alt.Axis(title=None, grid=True, ticks=False,
@@ -4344,20 +4346,22 @@ def hawk_dove_transition(records, p: Palette, height: int | None = None,
 
 
 def published_votes(decisions, p: Palette) -> tuple[alt.LayerChart, alt.LayerChart]:
-    """The Board's published vote at every meeting since it first sat, as two
-    charts sharing one meeting axis: the cash rate target stepping above, and
-    below it nine squares a meeting, one per member, coloured by what they
-    voted for, dissents outlined. The vote is unattributed, so a square is a
-    seat count, never a name -- the only read of the Board the RBA gives.
-    Two charts rather than a vconcat: a concat ignores the container width and
-    overflows its column."""
+    """The Board's published vote at every meeting since it first sat: a
+    ballot of nine seats per meeting under the cash rate target it set.
+
+    Seats are dots, not bars, because the count is the point -- nine people,
+    stacked majority first, the dissenters on top as rings in the colour of
+    the vote they cast (a ring of hold over a column of hikes reads as "four
+    wanted to wait"). The vote is unattributed, so a seat is a count, never a
+    name. Two charts sharing one meeting axis rather than a vconcat, which
+    ignores the container width and overflows its column."""
     colours = {"hike": p.negative, "hold": p.muted, "cut": p.positive,
                "against": p.ink_secondary}
     rows, rate = [], []
     for d in decisions:
         label = f"{d.when:%b %y}"
-        rate.append({"m": label, "rate": d.level, "split": d.split if d.votes else "n/p"})
-        # Majority first from the floor, so the dissent is the top of the column.
+        rate.append({"m": label, "rate": d.level, "split": d.split if d.votes else "n/p",
+                     "decision": f"{d.action} to {d.level:.2f}%"})
         order = [d.action] + sorted(a for a in d.votes if a != d.action)
         seat = 0
         for a in order:
@@ -4370,32 +4374,36 @@ def published_votes(decisions, p: Palette) -> tuple[alt.LayerChart, alt.LayerCha
     empty = _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()), p, 120)
     if not rate:
         return empty, empty
+    axis_w = dict(minExtent=46, maxExtent=46)
     x_top = alt.X("m:N", sort=order, title=None,
                   axis=alt.Axis(labels=False, ticks=False, domain=False))
     steps = alt.Chart(pd.DataFrame(rate)).mark_line(
-        interpolate="step-after", color=p.ink, strokeWidth=1.8,
-        point=alt.OverlayMarkDef(filled=True, size=34, color=p.ink)).encode(
+        interpolate="step-after", color=p.ink, strokeWidth=1.6,
+        point=alt.OverlayMarkDef(filled=True, size=26, color=p.ink)).encode(
         x=x_top,
-        y=alt.Y("rate:Q", title="Cash rate (%)", scale=alt.Scale(zero=False, nice=False,
-                padding=8), axis=alt.Axis(format=".2f", tickCount=4,
-                                                 minExtent=46, maxExtent=46)),
-        tooltip=[alt.Tooltip("m:N", title="meeting"), alt.Tooltip("rate:Q", format=".2f"),
+        y=alt.Y("rate:Q", title=None, scale=alt.Scale(zero=False, nice=False, padding=10),
+                axis=alt.Axis(format=".2f", tickCount=3, **axis_w)),
+        tooltip=[alt.Tooltip("m:N", title="meeting"), alt.Tooltip("decision:N"),
                  alt.Tooltip("split:N", title="vote")])
-    top = _apply(alt.layer(steps), p, 110)
+    top = _apply(alt.layer(steps), p, 92)
     if not rows:
         return top, empty
-    x = alt.X("m:N", sort=order, title=None, axis=alt.Axis(labelAngle=0, labelFontSize=10))
-    votes = alt.Chart(pd.DataFrame(rows)).mark_square(size=100, opacity=0.95).encode(
-        x=x, y=alt.Y("seat:Q", title="Members", scale=alt.Scale(domain=[-0.6, 9.4]),
-                     axis=alt.Axis(values=[0, 4, 8], labelExpr="datum.value + 1",
-                                   grid=False, minExtent=46, maxExtent=46)),
-        color=alt.Color("vote:N", scale=alt.Scale(domain=list(colours),
-                                                  range=list(colours.values())), legend=None),
-        stroke=alt.condition("datum.dissent", alt.value(p.ink), alt.value(None)),
-        strokeWidth=alt.value(1.4),
-        tooltip=[alt.Tooltip("m:N", title="meeting"), alt.Tooltip("decision:N"),
-                 alt.Tooltip("split:N", title="vote"), alt.Tooltip("vote:N", title="this seat")])
+    x = alt.X("m:N", sort=order, title=None,
+              axis=alt.Axis(labelAngle=0, labelFontSize=10, labelExpr="split(datum.label, ' ')",
+                            ticks=False, domain=False))
+    y = alt.Y("seat:Q", title=None, scale=alt.Scale(domain=[-0.7, 9.6]),
+              axis=alt.Axis(labels=False, ticks=False, grid=False, domain=False, **axis_w))
+    colour = alt.Color("vote:N", legend=None,
+                       scale=alt.Scale(domain=list(colours), range=list(colours.values())))
+    tips = [alt.Tooltip("m:N", title="meeting"), alt.Tooltip("decision:N"),
+            alt.Tooltip("split:N", title="vote"), alt.Tooltip("vote:N", title="this seat")]
+    df = pd.DataFrame(rows)
+    majority = alt.Chart(df[~df["dissent"]]).mark_circle(size=58, opacity=1).encode(
+        x=x, y=y, color=colour, tooltip=tips)
+    dissent = alt.Chart(df[df["dissent"]]).mark_point(
+        shape="circle", size=58, filled=False, strokeWidth=2.2, opacity=1).encode(
+        x=x, y=y, color=colour, tooltip=tips)
     split = alt.Chart(pd.DataFrame(rate)).mark_text(
-        fontSize=10, fontWeight=600, color=p.ink).encode(
-        x=x, y=alt.datum(9.2), text="split:N")
-    return top, _apply(alt.layer(votes, split), p, 190)
+        fontSize=10, fontWeight=600, color=p.ink_secondary).encode(
+        x=x, y=alt.datum(9.25), text="split:N")
+    return top, _apply(alt.layer(majority, dissent, split), p, 178)
