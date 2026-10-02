@@ -14,6 +14,7 @@ from ui import charts
 from ui import components as C
 from ui import inflation_panels as panels
 from ui import sources as src
+from core import publication as pub
 from ui.context import Ctx
 
 
@@ -29,7 +30,7 @@ def render(ctx: Ctx) -> None:
     start = C.window_start(window, ctx.as_of)
     panels.trend(ctx, start)
 
-    cpi = src.cpi_series()
+    cpi = src.cpi_published(ctx.as_of)
     vintage = charts.Vintage(next_release=src.next_release(econ_calendar.CPI_Q, ctx.today),
                              last_modified=cpi["as_at"])
     if not cpi["leaves"]:

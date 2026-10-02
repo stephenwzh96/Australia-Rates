@@ -20,7 +20,7 @@ SLIDE, LIVE = "Slide — Aug 2026", "Live"
 
 def render(ctx: Ctx) -> None:
     P = ctx.P
-    bundle = {k: src.capped(v, ctx.as_of) for k, v in src.fetch_macro_bundle().items()}
+    bundle = src.macro_published(ctx.as_of)
 
     head, ctl = st.columns([3, 1.1], vertical_alignment="bottom")
     with head:

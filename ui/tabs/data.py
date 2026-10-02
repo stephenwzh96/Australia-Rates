@@ -37,6 +37,7 @@ def render(ctx: Ctx) -> None:
         _labour(ctx)
         _cpi(ctx)
         _macro(ctx)
+    _timing(ctx)
     for extra in _EXTRA_PANELS:
         extra(ctx)
     C.note("No API key is needed for any source, a real difference from the US version, which "
@@ -111,6 +112,44 @@ def _rba(ctx: Ctx) -> None:
                 [[s.code, s.label, s.discontinued.isoformat()] for s in rba.CATALOGUE if not s.live])
         C.note("The RBA retired its OIS series in December 2022 — why the bill basis on the Curve "
                "tab is measured against the IB strip, which is an OIS curve, and a tradeable one.")
+
+
+#: How each source's copy is kept, so it is always ONE vintage of the source.
+VINTAGE_RULES = (
+    ("ASX IB / IR strips", "market", "each day's settlement; a day once kept is final"),
+    ("RBA statistical tables (CSV)", "whole file", "re-read daily; the whole table replaces the copy"),
+    ("ABS workbooks (Labour Force, CPI, approvals, lending)", "whole file",
+     "keyed to the release they came from; a new release is a new copy"),
+    ("ABS data API (national accounts, capex, PPI, HSI, monthly CPI, WPI, jobs)", "whole series",
+     "re-read daily in full -- never a recent window merged into an old copy, which "
+     "would splice two vintages when a revision reaches back"),
+    ("RBA decision statements, Board page, SMP rounds", "immutable", "a published page never changes"),
+)
+
+
+def _timing(ctx: Ctx) -> None:
+    """What the as-of date means for each source, and how each copy is kept."""
+    from core import publication as pub
+    st.divider()
+    C.section("Release timing and vintages",
+              "the as-of shows only what had been published by then")
+    left, right = st.container(), st.container()
+    with left:
+        C.sub("When each print counts as public")
+        rows = [[pub.LABEL.get(fam, fam), pub.RULE_TEXT[fam]] for fam in pub.RULE_TEXT]
+        C.table(["Release", "Public from"], rows)
+        exact = src.fetch_lf_release_dates()
+        C.note(f"{len(exact)} Labour Force release days are exact, from the ABS release pages"
+               + (f" ({min(exact):%b %Y} on)." if exact else ".")
+               + " Every other rule errs late: a print may show a few days after it landed, "
+                 "never before. The calendar's next-release dates come from the ABS release "
+                 "calendar where it has published them.")
+    with right:
+        C.sub("How each copy is kept")
+        C.table(["Source", "Refresh", "Why"], [list(r) for r in VINTAGE_RULES])
+        C.note("Values are each source's CURRENT vintage: Australia has no ALFRED, so a "
+               "replayed as-of shows data as revised since, released no earlier than it was. "
+               "The app's own seasonal adjustment of the gross flows uses the full history.")
 
 
 def _board(ctx: Ctx) -> None:

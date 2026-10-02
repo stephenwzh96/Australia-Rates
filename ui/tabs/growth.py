@@ -7,6 +7,7 @@ import streamlit as st
 
 from core import consumer, econ_calendar
 from core import growth as growth_mod
+from core import publication as pub
 from ui import charts
 from ui import components as C
 from ui import sources as src
@@ -41,8 +42,10 @@ def _period(d, cadence: str) -> str:
     return f"{d:%b %Y}"
 
 
-def _capped(obs, as_of):
-    return [o for o in obs if o.date <= as_of]
+def _capped(obs, as_of, family=pub.NATIONAL_ACCOUNTS):
+    """What had printed by the as-of (`core.publication`): the accounts in the
+    third month after their quarter, hours with the Labour Force."""
+    return src.published(obs, family, as_of)
 
 
 def render(ctx: Ctx) -> None:
@@ -67,7 +70,7 @@ def _growth(ctx: Ctx) -> None:
     start = C.window_start(window, ctx.as_of)
 
     hours, h1 = src.fetch_growth_inputs()
-    series = growth_mod.build(_capped(hours, ctx.as_of),
+    series = growth_mod.build(_capped(hours, ctx.as_of, pub.LABOUR_FORCE),
                               {k: _capped(v, ctx.as_of) for k, v in h1.items()})
     live = [s for s in series if s.ok]
     if not live:
@@ -115,7 +118,7 @@ def _consumer(ctx: Ctx) -> None:
                                   help="Scopes the spending and household charts.")
     start = C.window_start(window, ctx.as_of)
 
-    hsi = {k: _capped(v, ctx.as_of) for k, v in src.fetch_hsi().items()}
+    hsi = {k: _capped(v, ctx.as_of, pub.HSI) for k, v in src.fetch_hsi().items()}
     spend_lines = consumer.spending_lines(hsi.get(consumer.TOTAL, []))
     house = {k: _capped(v, ctx.as_of) for k, v in src.fetch_household_income().items()}
     house_lines = consumer.household_lines(house)

@@ -10,6 +10,7 @@ from datetime import date
 import streamlit as st
 
 from core import employment as empmod
+from core import publication as pub
 from ui import charts
 from ui import components as C
 from ui import sources as src
@@ -57,8 +58,12 @@ def render(ctx: Ctx) -> None:
     # employment panel, capacity against unemployment, and the job flows
     # against wages. Kept, after the US layout, on the same history window.
     st.divider()
-    data = {k: (src.capped(v, ctx.as_of) if not k.startswith("_") else v)
-            for k, v in src.abs_series().items()}
+    raw = src.abs_series()
+    data = {**{k: v for k, v in raw.items() if k.startswith("_")},
+            **src.published_map({k: v for k, v in raw.items() if not k.startswith("_")},
+                                {"medium_term": pub.LF_DETAILED,
+                                 "vacancies_to_unemployment": pub.VACANCIES},
+                                ctx.as_of, default=pub.LABOUR_FORCE)}
     _full_employment(ctx, data)
     _capacity_and_flows(ctx, data, start)
 
@@ -182,7 +187,7 @@ def _capacity_and_flows(ctx: Ctx, data: dict, start) -> None:
     vintage = charts.Vintage(next_release=src.next_release("Labour Force", ctx.today),
                              last_modified=src.data_asof(data))
     with lr1:
-        capacity = src.capped(src.manual_series(src.NAB_CAPACITY), ctx.as_of)
+        capacity = src.published(src.manual_series(src.NAB_CAPACITY), pub.NAB, ctx.as_of)
         capacity_ma = (src.trailing_mean(capacity, src.CAPACITY_MA_WINDOW) if capacity else None)
         unemployment = data.get("unemployment", [])
         st.altair_chart(charts.capacity_vs_unemployment(capacity, unemployment, P, start,

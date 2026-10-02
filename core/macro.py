@@ -220,6 +220,22 @@ INDICATORS: tuple[Indicator, ...] = (
                            "baseline -- which puts its z within 0.1 of the slide's"),
 )
 
+#: Release family of each row's live feed (or of the series a paste replaces).
+RELEASE = {
+    "unemployment": "labour_force", "underemployment": "labour_force",
+    "job_vacancies": "vacancies", "anz_job_ads": "private_monthly",
+    "cpi_trimmed_mean": "cpi_quarterly", "mi_inflation_expectations": "expectations",
+    "wpi": "wpi", "ppi": "ppi",
+    "building_approvals": "approvals", "private_building_approvals": "approvals",
+    "house_prices": "private_monthly", "home_loans": "lending",
+    "household_consumption": "national_accounts", "household_spending": "hsi",
+    "westpac_mi_sentiment": "westpac_mi", "anz_rm_confidence": "private_monthly",
+    "capex": "capex", "construction_work_done": "construction",
+    "company_profit": "national_accounts", "inventories": "national_accounts",
+    "gdp": "national_accounts", "private_credit": "credit",
+    "nab_business_conditions": "nab",
+}
+
 BY_KEY = {i.key: i for i in INDICATORS}
 
 

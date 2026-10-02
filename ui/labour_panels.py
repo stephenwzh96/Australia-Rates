@@ -15,6 +15,7 @@ from datetime import date
 import streamlit as st
 
 from core import econ_calendar, jobs_wages, labor, labor_flows
+from core import publication as pub
 from ui import charts
 from ui import components as C
 from ui import sources as src
@@ -22,9 +23,11 @@ from ui.context import Ctx
 
 
 def _live(ctx: Ctx) -> dict:
-    """Every series cut to what had printed by the as-of, on each release
-    family's fixed lag -- Australia has no archive of first-print dates."""
-    return labor.as_published(src.fetch_labor_series(), ctx.as_of, {})
+    """Every series cut to what had printed by the as-of: exact Labour Force
+    days from the ABS release pages, each other family's late rule
+    (`core.publication`)."""
+    return labor.as_published(src.fetch_labor_series(), ctx.as_of, {},
+                              src.fetch_lf_release_dates())
 
 
 def _vintage(ctx: Ctx, release: str = econ_calendar.LABOUR) -> charts.Vintage:
@@ -267,13 +270,21 @@ def _channels(ctx: Ctx, data, window: int, start, recessions, vintage) -> None:
 
 # ------------------------------------------------------------ labour market grid
 
+#: The grid's series by release: the vacancies gap prints with the quarterly
+#: vacancies survey, job loss with the gross flows, recessions with the GDP.
+GRID_FAMILY = {"UR": pub.LABOUR_FORCE, "PR": pub.LABOUR_FORCE, "EPOP": pub.LABOUR_FORCE,
+               "EMP_CHANGE": pub.LABOUR_FORCE, "EMP_CHANGE_3MA": pub.LABOUR_FORCE,
+               "JWGAP": pub.VACANCIES, "JOB_LOSS": pub.LF_DETAILED,
+               "SWITCHING": pub.LF_DETAILED, "RECESSION": pub.NATIONAL_ACCOUNTS}
+
 def labour_market(ctx: Ctx, start) -> None:
     P = ctx.P
     C.section("Labour market")
     data = src.fetch_labour_grid()
     keep = {"RECESSION"}
-    data = {k: [(d, v) for d, v in s if (k in keep or start is None or d >= start)
-                and d <= ctx.as_of] for k, s in data.items()}
+    data = src.published_map(data, GRID_FAMILY, ctx.as_of)
+    data = {k: [(d, v) for d, v in s if k in keep or start is None or d >= start]
+            for k, s in data.items()}
     if start is not None:
         data["RECESSION"] = [(d, v) for d, v in data["RECESSION"] if d >= start]
     lf_v = _vintage(ctx)
@@ -320,9 +331,9 @@ def decomposition(ctx: Ctx) -> None:
     with ctl:
         window = C.history_window("u_decomp_window", help="Scopes the decomposition only.")
     start = C.window_start(window, ctx.as_of)
-    rates = {k: src.capped(v, ctx.as_of)
-             for k, v in src.flow_transition_rates(src.gross_flows()).items()}
-    stocks = {k: src.capped(v, ctx.as_of) for k, v in src.decomposition_stocks().items()}
+    rates = src.published_map(src.flow_transition_rates(src.gross_flows()),
+                              pub.LF_DETAILED, ctx.as_of)
+    stocks = src.published_map(src.decomposition_stocks(), pub.LABOUR_FORCE, ctx.as_of)
     decomp = labor_flows.decompose(rates, stocks)
     if not decomp.ok:
         st.info("The ABS gross-flow cube could not be loaded.")
@@ -334,7 +345,8 @@ def decomposition(ctx: Ctx) -> None:
 def employment_and_wages(ctx: Ctx, start) -> None:
     P = ctx.P
     jobs = src.fetch_jobs_panel()
-    comp = {k: src.capped(v, ctx.as_of) for k, v in jobs_wages.components(jobs).items()}
+    jobs = src.published_map(jobs, pub.LABOUR_ACCOUNT, ctx.as_of)
+    comp = jobs_wages.components(jobs)
     last = max((s[-1][0] for s in jobs.values() if s), default=None)
     st.divider()
     C.heading("Employment by component", _quarter_note(last, "ABS Labour Account"), help=(
@@ -355,7 +367,7 @@ def employment_and_wages(ctx: Ctx, start) -> None:
                   ("Public administration", P.muted), ("Total filled jobs", P.ink),
                   ("Market sector (line)", P.negative)])
 
-    wpi = {k: src.capped(v, ctx.as_of) for k, v in src.fetch_wpi_panel().items()}
+    wpi = src.published_map(src.fetch_wpi_panel(), pub.WPI, ctx.as_of)
     w_last = max((s[-1][0] for s in wpi.values() if s), default=None)
     nxt = src.next_release(econ_calendar.WPI, ctx.today)
     C.heading("Industry wage-growth heatmap",

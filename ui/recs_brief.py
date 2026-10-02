@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable
 
+from core import publication as pub
 from core import (bank_calls, econ_calendar, growth as growth_mod, labor, macro as macro_mod,
                   release_prep, smp as smp_mod, speeches, trade_recs)
 from data import asx
@@ -57,8 +58,8 @@ def _bp(x: float | None, d: int = 1) -> str:
     return "n/a" if x is None or not math.isfinite(x) else f"{x:+.{d}f}bp"
 
 
-def _capped(obs, as_of: date) -> list:
-    return [o for o in obs if o.date <= as_of]
+def _capped(obs, as_of: date, family: str) -> list:
+    return src.published(obs, family, as_of)
 
 
 # ------------------------------------------------------------------ sections
@@ -136,7 +137,8 @@ def _vol(ctx) -> list[str]:
 
 def _calendar(ctx, spans: list[trade_recs.Horizon]) -> list[str]:
     end = ctx.as_of + timedelta(days=CALENDAR_DAYS)
-    events = econ_calendar.merged_calendar(ctx.as_of, end, [], ctx.meetings)
+    events = econ_calendar.merged_calendar(ctx.as_of, end, [], ctx.meetings,
+                                           src.release_dates(ctx.today))
     cards = store.load_release_cards()
     out = ["Horizons: " + "; ".join(f"{h.label} → {h.ends:%a %d %b} ({h.anchor})" for h in spans)]
     out.append("Scheduled ABS releases and RBA events, tier 1 and 2 (1 = market-moving):")
@@ -233,7 +235,7 @@ def _calls(ctx) -> list[str]:
 
 
 def _macro(ctx) -> list[str]:
-    bundle = {k: src.capped(v, ctx.as_of) for k, v in src.fetch_macro_bundle().items()}
+    bundle = src.macro_published(ctx.as_of)
     readings = macro_mod.dashboard(bundle)
     groups = macro_mod.groups(readings)
     total = macro_mod.total(readings)
@@ -247,7 +249,8 @@ def _macro(ctx) -> list[str]:
 
 
 def _labour(ctx) -> list[str]:
-    live = labor.as_published(src.fetch_labor_series(), ctx.as_of, {})
+    live = labor.as_published(src.fetch_labor_series(), ctx.as_of, {},
+                              src.fetch_lf_release_dates())
     month = labor.complete_month(live, labor.CHANGE_MONTHS)
     readings = labor.dashboard(labor.through_month(live, month), change_months=labor.CHANGE_MONTHS)
     s = labor.summarise(readings)
@@ -261,14 +264,14 @@ def _labour(ctx) -> list[str]:
 
 
 def _inflation(ctx) -> list[str]:
-    cpi = src.cpi_series()
+    cpi = src.cpi_published(ctx.as_of)
     out = []
     for key, label in (("trimmed_q", "Trimmed mean CPI, q/q"),
                        ("trimmed_yr", "Trimmed mean CPI, year-ended"),
                        ("headline_q", "Headline CPI, q/q"),
                        ("monthly_trimmed_yr", "Monthly CPI trimmed mean, year-ended"),
                        ("monthly_ex_volatiles_yr", "Monthly CPI ex volatiles, year-ended")):
-        rows = [(d, v) for d, v in (cpi.get(key) or []) if d <= ctx.as_of]
+        rows = cpi.get(key) or []
         if rows:
             d, v = rows[-1]
             out.append(f"{label}: {v:.2f}% ({d:%b %Y})")
@@ -276,10 +279,10 @@ def _inflation(ctx) -> list[str]:
     for code, label in (("GCONEXP", "Consumer inflation expectations (Melbourne Institute)"),
                         ("GMAREXPY", "Market economists' expectations, 1 year"),
                         ("GMAREXPYY", "Market economists' expectations, 2 years")):
-        rows = [(d, v) for d, v in (g3.get(code) or []) if d <= ctx.as_of]
+        rows = src.published(g3.get(code) or [], pub.EXPECTATIONS, ctx.as_of)
         if rows:
             out.append(f"{label}: {rows[-1][1]:.1f}% ({rows[-1][0]:%b %Y})")
-    wpi = [(d, v) for d, v in (src.rba_table("h4").get("GWPIQP") or []) if d <= ctx.as_of]
+    wpi = src.published(src.rba_table("h4").get("GWPIQP") or [], pub.WPI, ctx.as_of)
     if wpi:
         out.append(f"Wage Price Index: {wpi[-1][1]:+.2f}% q/q ({wpi[-1][0]:%b %Y})")
     if not out:
@@ -289,8 +292,9 @@ def _inflation(ctx) -> list[str]:
 
 def _growth(ctx) -> list[str]:
     hours, h1 = src.fetch_growth_inputs()
-    series = growth_mod.build(_capped(hours, ctx.as_of),
-                              {k: _capped(v, ctx.as_of) for k, v in h1.items()})
+    series = growth_mod.build(_capped(hours, ctx.as_of, pub.LABOUR_FORCE),
+                              {k: _capped(v, ctx.as_of, pub.NATIONAL_ACCOUNTS)
+                               for k, v in h1.items()})
     live = [s for s in series if s.ok]
     out = [f"{r['indicator']}: {r['value']:+.2f}% y/y ({r['date']:%d %b %Y})"
            for r in growth_mod.latest_readings(live)]
@@ -337,7 +341,8 @@ def spans(ctx) -> list[trade_recs.Horizon]:
     """The three horizons with real dates: the next tier-1 day, the next
     decision, and 90 days out."""
     end = ctx.as_of + timedelta(days=CALENDAR_DAYS)
-    events = econ_calendar.merged_calendar(ctx.as_of, end, [], ctx.meetings)
+    events = econ_calendar.merged_calendar(ctx.as_of, end, [], ctx.meetings,
+                                           src.release_dates(ctx.today))
     days = release_prep.upcoming_tier1(events, ctx.as_of)
     first = min(days, key=lambda d: d.when) if days else None
     if first is None:

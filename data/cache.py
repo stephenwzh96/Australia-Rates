@@ -174,6 +174,7 @@ def get_series(
     stale_after: int = DEFAULT_STALE_AFTER_DAYS,
     revision_window: int = REVISION_WINDOW_DAYS,
     recheck_after: int = 0,
+    whole: bool = False,
 ) -> list[Observation]:
     """Cached series, refreshed incrementally.
 
@@ -184,6 +185,10 @@ def get_series(
     A fetch that returns nothing is treated as a failed fetch, not as an empty
     series: the cached data is returned unchanged rather than being wiped by a
     transient outage.
+
+    `whole=True` refetches the entire series on every check and replaces the
+    copy -- the rule for any revised statistic. The windowed merge is only for
+    series whose history is never rewritten.
 
     `recheck_after` is the minimum days between network checks. The default 0
     rechecks on every call, which is what a live price wants. A monthly
@@ -200,7 +205,11 @@ def get_series(
             and not cached.is_stale(now, stale_after)):
         return list(cached.observations)
 
-    if cached is None or not cached.observations or cached.is_stale(now, stale_after):
+    # `whole`: a REVISED statistic. Every check replaces the copy with the
+    # source's whole current vintage; merging a recent window into the old
+    # copy would splice two vintages whenever a revision reaches further back
+    # than the window (the national accounts revise years at a time).
+    if whole or cached is None or not cached.observations or cached.is_stale(now, stale_after):
         fresh = fetch(None)
         if not fresh:
             return list(cached.observations) if cached else []

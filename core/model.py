@@ -172,7 +172,8 @@ def build(state: dict[str, Any],
           all_meetings: list[Meeting] | None = None,
           rate_history: list[tuple[date, float]] | None = None,
           rate_symbol: str | None = None,
-          policy_changes: set[date] | None = None) -> Model:
+          policy_changes: set[date] | None = None,
+          release_dates: "tuple[econ_calendar.ExactDates, ...]" = ()) -> Model:
     trade = state.get("trade", {})
     prob = state.get("probability", {})
     pth = state.get("path", {})
@@ -188,7 +189,7 @@ def build(state: dict[str, Any],
     calendar_start = when - timedelta(days=econ_calendar.LOOKBACK_DAYS)
     calendar_events = econ_calendar.merged_calendar(
         calendar_start, meeting.end, state.get("structure", {}).get("calendar") or [],
-        meetings)
+        meetings, release_dates)
 
     # Volatility shape is estimated over the CONTRACT's own history, which
     # reaches much further back than the calendar shown on screen -- see
@@ -201,7 +202,8 @@ def build(state: dict[str, Any],
         # lines on one Friday are one shock, and summing their excess
         # variance would treat a single report as three independent ones.
         hist_events = [(e.when, e.release)
-                       for e in econ_calendar.recurring_events(h0, h1, meetings)
+                       for e in econ_calendar.recurring_events(h0, h1, meetings,
+                                                               release_dates)
                        if e.release]
         # DECISION DAYS MUST COVER THE WHOLE HISTORY, NOT JUST THE CALENDAR.
         # The meeting calendar spans 2026-27; the BBSW history behind it runs

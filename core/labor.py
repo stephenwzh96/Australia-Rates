@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from . import clock
+from . import publication as pub
 
 #: The percentile pool. 2000 rather than the US 1995: the gross flows start in
 #: Sep 2007 and NAB capacity in 2000, so an earlier start would rank most rows
@@ -286,27 +287,36 @@ MAX_RELEASE_LAG = timedelta(days=150)
 
 CODE_LAG = {c: ind.lag_days for ind in INDICATORS for c in ind.codes}
 
+#: Each release lag names a family in `core.publication`, whose rule (exact
+#: Labour Force dates where known, otherwise a late rule) dates the print.
+LAG_FAMILY = {LAG_LABOUR_FORCE: pub.LABOUR_FORCE, LAG_LF_DETAILED: pub.LF_DETAILED,
+              LAG_VACANCIES: pub.VACANCIES, LAG_NAB: pub.NAB,
+              LAG_SENTIMENT: pub.WESTPAC_MI, LAG_WPI: pub.WPI}
+CODE_FAMILY = {c: LAG_FAMILY[lag] for c, lag in CODE_LAG.items()}
+
 
 def as_published(data: dict[str, list[tuple[date, float]]], as_of: date | None,
-                 first_release: dict[str, dict[date, date]]
+                 first_release: dict[str, dict[date, date]],
+                 exact_lf: dict[date, date] | None = None
                  ) -> dict[str, list[tuple[date, float]]]:
     """Every series cut to what had printed by `as_of`.
 
     An observation counts from the day it was first published where that is
-    known, so a print shows the day it lands; otherwise from the fixed lag of
-    the indicator that reads it, which is what `published` does. The result
-    is already cut: pass it on with `as_of=None`, or the fixed lag cuts again.
+    known (`first_release`), else from its release family's rule in
+    `core.publication` -- exact Labour Force days from `exact_lf`, a late rule
+    otherwise. The result is already cut: pass it on with `as_of=None`.
     """
     if as_of is None:
         return data
     out = {}
     for code, rows in data.items():
         fr = first_release.get(code) or {}
-        lag = timedelta(days=CODE_LAG.get(code, LAG_LABOUR_FORCE))
+        family = CODE_FAMILY.get(code, pub.LABOUR_FORCE)
         kept = []
         for d, v in rows:
             rel = fr.get(d)
-            printed = rel if rel is not None and rel - d <= MAX_RELEASE_LAG else d + lag
+            printed = (rel if rel is not None and rel - d <= MAX_RELEASE_LAG
+                       else pub.public_on(family, d, exact_lf))
             if printed <= as_of:
                 kept.append((d, v))
         out[code] = kept

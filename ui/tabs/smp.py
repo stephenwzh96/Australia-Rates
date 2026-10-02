@@ -14,6 +14,7 @@ from core import roster as R
 from core import smp as smp_mod
 from core import taylor
 from core import taylor_heatmap as th
+from core import publication as pub
 from ui import charts
 from ui import components as C
 from ui import sources as src
@@ -335,9 +336,8 @@ def _taylor_heatmap(ctx: Ctx) -> None:
                         "and NAIRU the RBA's own estimates span. When the whole grid sits on "
                         "one side of the cash rate, the gap between the rule and the Board does "
                         "not hang on one input.", "", "taylorheat"))
-    cpi = src.cpi_series()
-    tm = cpi.get("trimmed_yr") or []
-    ur = src.capped(src.rba_table("h5").get("GLFSURSA", []), ctx.as_of)
+    tm = src.cpi_published(ctx.as_of).get("trimmed_yr") or []
+    ur = src.published(src.rba_table("h5").get("GLFSURSA", []), pub.LABOUR_FORCE, ctx.as_of)
     heat = th.build(tm[-1][1] if tm else None, ur[-1][1] if ur else None,
                     ctx.market.spot.get("cash"))
     if not heat.ok:

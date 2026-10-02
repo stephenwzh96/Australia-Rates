@@ -107,9 +107,45 @@ def _months_between(start: date, end: date):
         m = date(m.year + (m.month // 12), m.month % 12 + 1, 1)
 
 
+@dataclass(frozen=True)
+class ExactDates:
+    """Published release days for one release over the span its source covers
+    (the ABS release calendar ahead, the ABS release pages behind). Inside
+    `[lo, hi]` these REPLACE the rule's dates -- not month by month, because a
+    release can move across a month end (the November 2026 CPI is due on
+    6 January 2027)."""
+    release: str
+    dates: tuple[date, ...]
+    lo: date
+    hi: date
+
+
+#: How an exact-dated release is shown: the rule's label and weight.
+_EXACT_LABEL = {
+    LABOUR: ("Labour Force (employment, unemployment rate)", 1),
+    CPI_Q: ("CPI, quarterly (headline and trimmed mean)", 1),
+    CPI_M: ("Monthly CPI indicator", 2),
+    WPI: ("Wage Price Index", 2),
+    GDP: ("National Accounts (GDP)", 2),
+}
+
+
+def _apply_exact(events: list[Event], exact: "tuple[ExactDates, ...] | list[ExactDates]",
+                 start: date, end: date) -> list[Event]:
+    for ex in exact:
+        label, weight = _EXACT_LABEL.get(ex.release, (ex.release, 2))
+        events = [e for e in events if not (e.release == ex.release and ex.lo <= e.when <= ex.hi)]
+        events += [Event(d, label, weight, "abs", "ABS release calendar (exact).",
+                         release=ex.release)
+                   for d in ex.dates if ex.lo <= d <= ex.hi and start <= d <= end]
+    return events
+
+
 def recurring_events(start: date, end: date,
-                     meetings: list[Meeting] | None = None) -> list[Event]:
-    """Every rule-derived Australian event in [start, end]."""
+                     meetings: list[Meeting] | None = None,
+                     exact: "tuple[ExactDates, ...] | list[ExactDates]" = ()) -> list[Event]:
+    """Every Australian event in [start, end]: exact ABS release days where
+    `exact` covers them, the rule otherwise."""
     out: list[Event] = []
 
     for m in _months_between(start, end):
@@ -159,6 +195,7 @@ def recurring_events(start: date, end: date,
             out.append(Event(minutes, "RBA minutes", 2, "rule",
                              "A fortnight after the decision.", release=MINUTES))
 
+    out = _apply_exact(out, exact, start, end)
     out.sort(key=lambda e: (e.when, -e.weight))
     return [e for e in out if start <= e.when <= end]
 
@@ -179,17 +216,18 @@ def events_from_state(rows) -> list[Event]:
 
 
 def merged_calendar(start: date, end: date, manual_rows,
-                    meetings: list[Meeting] | None = None) -> list[Event]:
+                    meetings: list[Meeting] | None = None,
+                    exact: "tuple[ExactDates, ...] | list[ExactDates]" = ()) -> list[Event]:
     """Rule-derived and hand-entered events in one list.
 
     A manual entry on the same day as a rule-derived one WINS -- if the user
     has typed a date they verified, it supersedes this module's rule for that
-    release. Signature keeps the US version's shape minus `release_dates`,
-    which required a FRED key that has no Australian equivalent.
+    release. `exact` plays the US version's `release_dates`: published release
+    days (the ABS calendar) that replace the rules inside the span they cover.
     """
     manual = events_from_state(manual_rows)
     claimed = {(e.when, e.release) for e in manual if e.release}
-    rules = [e for e in recurring_events(start, end, meetings)
+    rules = [e for e in recurring_events(start, end, meetings, exact)
              if (e.when, e.release) not in claimed]
     return sorted(manual + rules, key=lambda e: (e.when, -e.weight))
 

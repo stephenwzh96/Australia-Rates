@@ -17,6 +17,7 @@ import streamlit as st
 
 from core import clock, contracts, econ_calendar, release_prep, release_research
 from core import employment as empmod
+from core import publication as pub
 from core import inflation as infl
 from core import macro as macromod
 from data import abs as absmod
@@ -577,8 +578,33 @@ def data_asof(data: dict) -> date:
 
 
 def capped(series: list[tuple[date, float]], as_of: date) -> list[tuple[date, float]]:
-    """A series cut at the as-of: no reference period after it is shown."""
+    """A MARKET series cut at the as-of: daily rates and settlements, public on
+    the day they are for. Statistics never use this -- they print weeks after
+    their reference period; use `published` with their release family."""
     return [(d, v) for d, v in series if d <= as_of]
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_lf_release_dates() -> dict[date, date]:
+    """Reference month -> the day its Labour Force release came out (ABS
+    release pages, Dec 2019 on). The exact half of the publication rules."""
+    from nextprint import fetch
+    try:
+        return fetch.lf_release_dates()
+    except Exception:                                           # noqa: BLE001
+        return {}
+
+
+
+def published(rows, family: str, as_of: date | None) -> list:
+    """`rows` cut to what had PRINTED by the as-of, by its release family
+    (`core.publication`): a statistic shows from its release day, not from its
+    reference date."""
+    return pub.published(rows, family, as_of, fetch_lf_release_dates())
+
+
+def published_map(data: dict, families, as_of: date | None, default: str | None = None) -> dict:
+    return pub.published_map(data, families, as_of, fetch_lf_release_dates(), default)
 
 
 # ------------------------------------------------------------------ inflation
@@ -626,6 +652,26 @@ def cpi_series() -> dict:
         "monthly_ex_volatiles_yr": pairs(mth.get(absmod.EX_VOLATILES, [])),
         "period": absmod.latest_release(absmod.CPI_LANDING) or "",
     }
+
+
+def cpi_published(as_of: date | None) -> dict:
+    """`cpi_series` as it stood at the as-of: every quarterly series cut to the
+    quarters PRINTED by then (end of the month after the quarter), the monthly
+    ones likewise, and `as_at` moved back to the last printed quarter. The
+    basket weights are the latest reweight either way -- weights are a
+    property of the basket, not a print."""
+    cpi = dict(cpi_series())
+    q = lambda rows: published(rows or [], pub.CPI_QUARTERLY, as_of)            # noqa: E731
+    cpi["classes"] = {k: q(v) for k, v in cpi.get("classes", {}).items()}
+    for k in ("trimmed_q", "trimmed_yr", "headline_q"):
+        cpi[k] = q(cpi.get(k))
+    for k in ("monthly_trimmed_yr", "monthly_ex_volatiles_yr"):
+        cpi[k] = published(cpi.get(k) or [], pub.CPI_MONTHLY, as_of)
+    at = cpi.get("as_at")
+    if at is not None and as_of is not None and pub.public_on(pub.CPI_QUARTERLY, at) > as_of:
+        cpi["as_at"] = max((d for rows in cpi["classes"].values() for d, _ in rows[-1:]),
+                           default=None)
+    return cpi
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner="Pulling the monthly CPI…")
@@ -734,10 +780,47 @@ def fetch_macro_bundle() -> dict[str, list[tuple[date, float]]]:
 
 # ------------------------------------------------------------------ calendar
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def release_dates(today: date) -> tuple:
+    """Published release days that replace the calendar's rules (see
+    `core.econ_calendar.ExactDates`): the ABS future-release calendar for the
+    next six months, and every past Labour Force day the ABS release pages
+    still carry. Empty when neither can be read -- the rules then stand."""
+    from data import abs_calendar
+    out = []
+    try:
+        future = abs_calendar.future(today)
+    except Exception:                                           # noqa: BLE001
+        future = {}
+    lo = date(today.year, today.month, 1)
+    # The last day of the sixth month read, today's month included.
+    hi = date(today.year + (today.month + 5) // 12, (today.month + 5) % 12 + 1, 1) - timedelta(days=1)
+    names = {"Labour Force": econ_calendar.LABOUR, "Wage Price Index": econ_calendar.WPI,
+             "National Accounts (GDP)": econ_calendar.GDP}
+    for title, release in names.items():
+        if future.get(title):
+            out.append(econ_calendar.ExactDates(release, tuple(future[title]), lo, hi))
+    if future.get("CPI"):
+        # One ABS title for both: the quarterly print comes late in the month
+        # after a quarter, every other CPI day is a monthly print.
+        quarterly = tuple(d for d in future["CPI"] if d.month in (1, 4, 7, 10) and d.day >= 20)
+        monthly = tuple(d for d in future["CPI"] if d not in quarterly)
+        out += [econ_calendar.ExactDates(econ_calendar.CPI_Q, quarterly, lo, hi),
+                econ_calendar.ExactDates(econ_calendar.CPI_M, monthly, lo, hi)]
+    past = sorted(fetch_lf_release_dates().values())
+    if past:
+        out.append(econ_calendar.ExactDates(econ_calendar.LABOUR, tuple(past),
+                                            date(past[0].year, past[0].month, 1),
+                                            min(lo - timedelta(days=1), past[-1])))
+    return tuple(out)
+
+
 def next_release(release: str, today: date, horizon_days: int = 200) -> date | None:
-    """The next rule-dated print of a release on or after today."""
+    """The next print of a release on or after today: the ABS's own date where
+    it has published one, the rule otherwise."""
     return next((e.when for e in econ_calendar.recurring_events(
-        today, today + timedelta(days=horizon_days)) if e.release == release), None)
+        today, today + timedelta(days=horizon_days), None, release_dates(today))
+        if e.release == release), None)
 
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
@@ -895,3 +978,12 @@ def fetch_nextprint_data() -> dict:
 
 
 register_refresh(fetch_nextprint_data.clear)
+
+
+register_refresh(fetch_lf_release_dates.clear)
+
+
+def macro_published(as_of: date | None) -> dict[str, list[tuple[date, float]]]:
+    """The Macro bundle cut to what each row's release had printed by the
+    as-of (`core.macro.RELEASE`)."""
+    return published_map(fetch_macro_bundle(), macromod.RELEASE, as_of)

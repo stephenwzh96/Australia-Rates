@@ -8,6 +8,7 @@ import streamlit as st
 
 from core import cpi_monthly, dispersion, econ_calendar
 from core import inflation_drivers as drivers
+from core import publication as pub
 from ui import charts
 from ui import components as C
 from ui import contributions as contrib
@@ -15,8 +16,8 @@ from ui import sources as src
 from ui.context import Ctx
 
 
-def _capped(series, as_of):
-    return [(d, v) for d, v in series if d <= as_of]
+def _capped(series, as_of, family):
+    return src.published(series, family, as_of)
 
 
 def trend(ctx: Ctx, start) -> None:
@@ -24,8 +25,11 @@ def trend(ctx: Ctx, start) -> None:
     panel = src.fetch_cpi_monthly()
     monthly = cpi_monthly.monthly_trend(panel)
     quarterly = cpi_monthly.quarterly_trend(src.rba_table("g1"))
-    series = [cpi_monthly.TrendSeries(s.code, s.label, s.panel, _capped(s.observations, as_of),
-                                      s.headline) for s in monthly + quarterly]
+    series = [cpi_monthly.TrendSeries(
+        s.code, s.label, s.panel,
+        _capped(s.observations, as_of,
+                pub.CPI_MONTHLY if s.panel == "Monthly" else pub.CPI_QUARTERLY),
+        s.headline) for s in monthly + quarterly]
     live = [s for s in series if s.ok]
     if not live:
         st.warning("No CPI series could be loaded — the Data tab has each source's status.")
@@ -33,7 +37,7 @@ def trend(ctx: Ctx, start) -> None:
     vintages = {"Monthly": charts.Vintage(src.next_release(econ_calendar.CPI_M, ctx.today),
                                           src.cpi_monthly_vintage()),
                 "Quarterly": charts.Vintage(src.next_release(econ_calendar.CPI_Q, ctx.today),
-                                            src.cpi_series().get("as_at"))}
+                                            src.cpi_published(as_of).get("as_at"))}
     figures = charts.inflation_trend(live, ctx.P, window_start=start, vintages=vintages)
     cols = st.columns(len(figures), gap="medium")
     for col, fig in zip(cols, figures):
@@ -62,11 +66,11 @@ def dispersion_panel(ctx: Ctx) -> None:
                     f"balanced share = {dispersion.BALANCED_SHARE:.0f}% · y is the basket "
                     "re-aggregated on its own (previous-quarter) weights — see core.dispersion",
                     "cpidisp"))
-    cpi = src.cpi_series()
+    cpi = src.cpi_published(ctx.as_of)
     if not cpi.get("classes"):
         st.info("The CPI expenditure classes are not loaded.")
         return
-    disp = dispersion.from_classes(cpi["classes"], cpi["weights"], as_of=ctx.as_of)
+    disp = dispersion.from_classes(cpi["classes"], cpi["weights"])
     if not disp.ok:
         st.info("Not enough quarters to place the scatter.")
         return
@@ -80,10 +84,10 @@ def dispersion_panel(ctx: Ctx) -> None:
 
 def contributions(ctx: Ctx, start) -> None:
     P, as_of = ctx.P, ctx.as_of
-    panel = src.fetch_cpi_monthly()
+    panel = src.published_map(src.fetch_cpi_monthly(), pub.CPI_MONTHLY, as_of)
     nodes = src.cpi_tree()
-    vintage = charts.Vintage(src.next_release(econ_calendar.CPI_M, ctx.today),
-                             src.cpi_monthly_vintage())
+    last = max((rows[-1][0] for rows in panel.values() if rows), default=None)
+    vintage = charts.Vintage(src.next_release(econ_calendar.CPI_M, ctx.today), last)
     C.section("CPI inflation contributions",
               "by expenditure group · the ABS's own contribution measures")
     figs = cpi_monthly.group_contributions(panel, nodes)
@@ -124,7 +128,8 @@ def drivers_panel(ctx: Ctx) -> None:
     g3, h4 = src.rba_table("g3"), src.rba_table("h4")
     left, right = st.columns(2, gap="large")
     with left:
-        lines = [drivers_line(ln, ctx.as_of) for ln in drivers.expectation_lines(g3)]
+        lines = [drivers_line(ln, ctx.as_of, pub.EXPECTATIONS)
+                 for ln in drivers.expectation_lines(g3)]
         st.plotly_chart(charts.inflation_expectations(
             lines, ctx.P, window_start=start,
             vintage=charts.Vintage(None, max((ln.observations[-1].date for ln in lines
@@ -135,13 +140,13 @@ def drivers_panel(ctx: Ctx) -> None:
                     [[r["label"], f"{r['date']:%b %Y}", f"{r['value']:.1f}%"] for r in reads],
                     numeric=(2,))
     with right:
-        lines = [drivers_line(ln, ctx.as_of) for ln in drivers.wpi_lines(h4)]
+        lines = [drivers_line(ln, ctx.as_of, pub.WPI) for ln in drivers.wpi_lines(h4)]
         st.plotly_chart(charts.wage_price_index(
             lines, ctx.P, window_start=start,
             vintage=charts.Vintage(src.next_release(econ_calendar.WPI, ctx.today), None)),
             width="stretch")
 
 
-def drivers_line(ln, as_of):
+def drivers_line(ln, as_of, family):
     from core.consumer import Line
-    return Line(ln.key, ln.label, [o for o in ln.observations if o.date <= as_of])
+    return Line(ln.key, ln.label, src.published(ln.observations, family, as_of))

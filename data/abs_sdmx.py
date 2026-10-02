@@ -114,16 +114,22 @@ def series(indicator_key: str) -> list[Observation]:
 
     Cached on disk and rechecked at most daily -- these are monthly/quarterly
     statistics, so a per-render round trip would only ever confirm nothing has
-    changed.
+    changed -- and each check replaces the whole series (one vintage, never
+    two spliced).
     """
     spec = SERIES.get(indicator_key)
     if spec is None:
         return []
     flow, key = spec
+    # Whole, not windowed: every one of these is revised (the national
+    # accounts, profits, capex and construction rewrite back years), and a
+    # windowed merge would splice vintages. A quarterly series since 1998 is
+    # a few kilobytes, so the whole history costs nothing to re-read.
     return cache.get_series(
         f"abs-sdmx-{indicator_key}",
         lambda since: _fetch(flow, key, since),
         recheck_after=1,
+        whole=True,
     )
 
 

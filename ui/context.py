@@ -124,6 +124,7 @@ class Ctx:
             rate_history=src.bbsw_history(),
             rate_symbol="3-month BBSW (RBA F1)",
             policy_changes=src.policy_changes(),
+            release_dates=src.release_dates(self.today),
         )
         anchor = self.spot
         mk = self.market
