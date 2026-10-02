@@ -24,6 +24,7 @@ import altair as alt
 import pandas as pd
 import plotly.graph_objects as go
 
+from core import labor
 from core import path as pathmod
 from core import pricing, sizing
 from core.pricing import Side
@@ -1744,3 +1745,1144 @@ def playbook_pnl(
 
     chart = (bars + out_text).configure_axisX(grid=False)
     return _apply(chart, p, height)
+
+
+# ---------------------------------------------------------------------------
+# Shared Plotly helpers (consumer, drivers, heat scales) -- from the US app
+# ---------------------------------------------------------------------------
+
+_CONSUMER_COLOURS = {
+    "light": {"bar": "#bcc3d3", "3m": "#4a5670", "12m": "#9c2743",
+              "spending": "#b3bbd0", "income": "#7d1d36", "ex_transfers": "#c0395a",
+              "bubble": "#6b7486", "bubble_fill": "rgba(107,116,134,0.07)",
+              "star": "#b3223f"},
+    "dark": {"bar": "#4c5670", "3m": "#93a4c6", "12m": "#d4415f",
+             "spending": "#4a5572", "income": "#e0708a", "ex_transfers": "#f0a3b5",
+             "bubble": "#9aa3b7", "bubble_fill": "rgba(154,163,183,0.08)",
+             "star": "#e05a75"},
+}
+
+#: Title, subtitle and footer geometry shared by the consumer charts, so two of
+#: them side by side put their plot areas at the same height.
+_CONSUMER_TOP = 78
+_CONSUMER_READOUT_PX = 164       # right-hand "latest" block
+_BARE_RIGHT_PX = 16              # right margin with no block
+_CONSUMER_FOOTER_LINE_PX = 14
+
+
+def _consumer_colours(p: Palette) -> dict[str, str]:
+    return _CONSUMER_COLOURS["dark" if p.mode == "dark" else "light"]
+
+
+def _monthly_ticks(span_days: int) -> tuple[str, str]:
+    """(tick format, dtick) for a monthly chart: Jul-23 / Jan-24 up to four
+    years, as in the published charts, then every year, then every other."""
+    if span_days <= 400:
+        return "%b-%y", "M2"
+    if span_days <= 1600:
+        return "%b-%y", "M6"
+    if span_days <= 2600:
+        return "%Y", "M12"
+    return "%Y", "M24"
+
+
+def _swatch_title(title: str, parts: list[tuple[str, str]], sep: str,
+                  p: Palette, lead: str = "") -> dict:
+    """A title whose subtitle IS the legend: each series named in its colour.
+
+    The published charts carry no legend box at all, and a legend parked under
+    the plot is the thing that ends up on the x tick labels.
+    """
+    names = sep.join(f'<span style="color:{c}"><b>{html.escape(t)}</b></span>'
+                     for t, c in parts)
+    return dict(text=title, x=0.0, xanchor="left", font=title_font(p),
+                subtitle=dict(text=f"{lead}{names}", font=subtitle_font(p)))
+
+
+def _footer(fig: go.Figure, lines: list[str], p: Palette, below: int = 0) -> int:
+    """Source and vintage lines under the x axis; returns the bottom margin.
+
+    `below` is anything else hung under the tick labels first -- an axis title.
+    """
+    lines = [ln for ln in lines if ln]
+    for i, text in enumerate(lines):
+        fig.add_annotation(xref="paper", yref="paper", x=0.0, y=0.0,
+                           xanchor="left", yanchor="top", showarrow=False,
+                           yshift=-(_X_TICK_PX + 4 + below + i * _CONSUMER_FOOTER_LINE_PX),
+                           text=html.escape(text), align="left",
+                           font=dict(size=10, color=p.muted))
+    return _X_TICK_PX + 8 + below + len(lines) * _CONSUMER_FOOTER_LINE_PX
+
+
+def _readout(fig: go.Figure, heading: str, rows: list[tuple[str, str, str]],
+             p: Palette) -> None:
+    """The latest print, parked right of the plot: heading, then label/value."""
+    fig.add_annotation(xref="paper", yref="paper", x=1.0, y=0.86,
+                       xanchor="left", yanchor="bottom", xshift=14,
+                       showarrow=False, text=f"<u>{html.escape(heading)}</u>",
+                       font=dict(size=13, color=p.ink))
+    for i, (label, value, colour) in enumerate(rows):
+        y = 0.86 - 0.075 * (i + 1)
+        common = dict(xref="paper", yref="paper", x=1.0, y=y, yanchor="bottom",
+                      showarrow=False, font=dict(size=12, color=colour))
+        fig.add_annotation(xanchor="left", xshift=14, text=html.escape(label), **common)
+        fig.add_annotation(xanchor="right", xshift=_CONSUMER_READOUT_PX - 6,
+                           text=f"<b>{html.escape(value)}</b>", **common)
+
+
+def _consumer_empty(fig: go.Figure, text: str, p: Palette, height: int) -> go.Figure:
+    fig.add_annotation(text=text, showarrow=False, font=dict(color=p.ink))
+    fig.update_layout(height=height, paper_bgcolor=p.surface, plot_bgcolor=p.plane)
+    return fig
+
+
+def _trim_lines(lines, window_start: date | None) -> tuple[dict, list]:
+    """Each line's observations inside the window, and the lines left with any.
+
+    Shared by every titled-legend time-series chart, so the window is applied
+    the same way in all of them."""
+    trimmed = {ln.key: [o for o in ln.observations
+                        if window_start is None or o.date >= window_start]
+               for ln in lines}
+    return trimmed, [ln for ln in lines if trimmed[ln.key]]
+
+
+def _monthly_frame(fig: go.Figure, p: Palette, height: int, dates: list[date],
+                   title: dict, bottom: int, tickformat: str,
+                   right: int = _CONSUMER_READOUT_PX, top: int = _CONSUMER_TOP,
+                   zero_line: bool = True, hoverformat: str = "%b %Y",
+                   pad_days: int = 20) -> None:
+    """Axes and layout shared by the titled-legend time-series charts."""
+    min_date, max_date = min(dates), max(dates)
+    pad = timedelta(days=pad_days)
+    if zero_line:
+        # A shape counts toward autorange, so it is drawn only where zero
+        # belongs on the axis anyway.
+        fig.add_shape(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0,
+                      line=dict(color=p.ink_secondary, width=1.2), layer="above")
+    fig.update_layout(
+        height=height, title=title,
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+        font=dict(color=p.ink, size=12),
+        margin=dict(l=52, r=right, t=top, b=bottom),
+        showlegend=False, hovermode="x unified", bargap=0.35,
+    )
+    fig.update_yaxes(title=None, gridcolor=p.grid, zeroline=False,
+                     ticksuffix="%", tickformat=tickformat)
+    xfmt, xdtick = _monthly_ticks((max_date - min_date).days)
+    fig.update_xaxes(type="date", tickformat=xfmt, dtick=xdtick,
+                     hoverformat=hoverformat, showgrid=False,
+                     range=[min_date - pad, max_date + pad])
+
+
+_DRIVER_COLOURS = {
+    "light": {"point_3y": "#b9c0d0", "density_3y": "#4a5670", "umich_5_10": "#9c2743",
+              "benefits": "#b9c0d0", "wages": "#4a5670", "total": "#9c2743"},
+    "dark": {"point_3y": "#6b7590", "density_3y": "#93a4c6", "umich_5_10": "#d4415f",
+             "benefits": "#6b7590", "wages": "#93a4c6", "total": "#d4415f"},
+}
+#: The pale slate is right for a line behind the others but too faint as type;
+#: its name in the subtitle takes this tone instead.
+_DRIVER_PALE_INK = {"light": "#98a1b6", "dark": "#8d97b0"}
+
+#: Two subtitle lines in each of the pair, so their plot areas start level.
+_DRIVER_TOP = 94
+_DRIVER_RIGHT = 20
+
+
+def _driver_colours(p: Palette) -> tuple[dict[str, str], str]:
+    mode = "dark" if p.mode == "dark" else "light"
+    return _DRIVER_COLOURS[mode], _DRIVER_PALE_INK[mode]
+
+
+def _named(text: str, colour: str) -> str:
+    return f'<span style="color:{colour}"><b>{html.escape(text)}</b></span>'
+
+
+def _driver_title(title: str, subtitle: str, p: Palette) -> dict:
+    return dict(text=title, x=0.0, xanchor="left", font=title_font(p),
+                subtitle=dict(text=subtitle, font=subtitle_font(p)))
+
+
+_HEAT_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
+    (0.00, (205, 82, 96)),
+    (0.25, (220, 145, 115)),
+    (0.50, (209, 195, 125)),
+    (0.75, (168, 186, 114)),
+    (0.90, (92, 142, 92)),
+    (1.00, (34, 62, 43)),
+)
+
+
+
+
+def _lerp_hex(a: str, b: str, t: float) -> str:
+    ca, cb = _hex_rgb(a), _hex_rgb(b)
+    t = min(1.0, max(0.0, t))
+    return "#" + "".join(
+        f"{round((x + (y - x) * t) * 255):02x}" for x, y in zip(ca, cb))
+
+
+def _heat_colour(t: float) -> str:
+    """t in [0,1] -> RGB hex through the source's red->green gradient."""
+    for (t0, c0), (t1, c1) in zip(_HEAT_STOPS, _HEAT_STOPS[1:]):
+        if t <= t1:
+            k = (t - t0) / (t1 - t0)
+            return _lerp_hex("#%02x%02x%02x" % c0, "#%02x%02x%02x" % c1, k)
+    return "#%02x%02x%02x" % _HEAT_STOPS[-1][1]
+
+
+def _readable_ink(fill: str) -> str:
+    """Black or white on `fill`, whichever has more contrast."""
+    def channel(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(c) for c in _hex_rgb(fill))
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#ffffff" if (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.0555) else "#111111"
+
+
+# ---------------------------------------------------------------------------
+# Labour: slack dashboard, diffusion, flows, channels (ported from the US app)
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+#: The channel wash behind the overall indicator's rows. Faint on purpose: the
+#: wash only groups rows, identity is carried by the solid strip at the plot's
+#: left edge, and the red and blue marks must stay the loudest thing in a row.
+#: Dark needs a little more to register against a near-black page.
+_SLACK_WASH = {"light": 0.07, "dark": 0.13}
+_SLACK_STRIP_PX = 4
+_SLACK_LABEL_PX = 150       # right margin for the channel names and tallies
+
+
+def labor_slack(readings, p: Palette, height: int = 640) -> alt.LayerChart:
+    """The labour-market slack dashboard: every indicator as a percentile of
+    its own 2000-present distribution, on one More Slack -> Less Slack axis.
+
+    Rows are grouped by channel, most important first (labor.CHANNELS order),
+    each group washed in its channel colour and tallied in the right margin,
+    so which way each channel is travelling reads at a glance."""
+    by_key = {r.indicator.key: r for r in readings if r.ok}
+    colours, ink = channel_colours(p), channel_ink(p)
+    rows, seg, bands, tallies = [], [], [], []
+    for ch in labor.CHANNELS:
+        members = [by_key[k] for k in ch.members if k in by_key]
+        if not members:
+            continue
+        for r in members:
+            rows.append({
+                "label": r.indicator.label, "pct": r.current_pct,
+                "travel": r.travel, "value": r.current_value,
+                "as_of": r.as_of.isoformat() if r.as_of else "",
+                "approx": "yes" if r.indicator.approximate else "no",
+                "n": r.n_obs, "channel": ch.label,
+            })
+            bands.append({"label": r.indicator.label, "channel": ch.key})
+            if r.year_ago_pct is not None:
+                seg.append({"label": r.indicator.label, "pct": r.year_ago_pct,
+                            "pct2": r.current_pct, "travel": r.travel})
+        up = sum(r.travel == "tightening" for r in members)
+        down = sum(r.travel == "cooling" for r in members)
+        flat = len(members) - up - down
+        single = len(members) == 1
+        # A one-indicator channel has no second row for its tally (Australia's
+        # Firing and Participation hold one series each), so the tally rides on
+        # the name's own row instead of overprinting it.
+        tallies.append({"first": members[0].indicator.label,
+                        "second": members[min(1, len(members) - 1)].indicator.label,
+                        "name": (f"{ch.label}  ▲{up} ▼{down} ·{flat}" if single else ch.label),
+                        "key": ch.key, "up": f"▲{up}", "down": f"▼{down}",
+                        "flat": f"·{flat}", "single": single})
+    df, sdf = pd.DataFrame(rows), pd.DataFrame(seg)
+    bdf, tdf = pd.DataFrame(bands), pd.DataFrame(tallies)
+    order = [x["label"] for x in rows]
+    keys = [c.key for c in labor.CHANNELS]
+
+    travel_scale = alt.Scale(
+        domain=["cooling", "tightening", "flat"],
+        range=[p.negative, p.positive, p.muted])
+    # One explicit row domain shared by every layer: layers that encode rows
+    # through different fields would otherwise merge their sorts and fall back
+    # to alphabetical, scattering the channel groups.
+    rows_scale = alt.Scale(domain=order, paddingInner=0, paddingOuter=0)
+    row_axis = alt.Axis(title=None, labelFontSize=10, labelLimit=190, grid=False,
+                        ticks=False, domain=False, labelPadding=8)
+    y_enc = alt.Y("label:N", sort=None, scale=rows_scale, axis=row_axis)
+    x_enc = alt.X("pct:Q", scale=alt.Scale(domain=[0, 100]),
+                  axis=alt.Axis(title="Percentile of 2000-present   —   more slack ← → less slack",
+                                format="d", values=[0, 25, 50, 75, 100]))
+    wash = alt.Scale(domain=keys, range=[colours[k] for k in keys])
+    mode = "dark" if p.mode == "dark" else "light"
+
+    layers = [
+        # The wash: one full-height band per row, so a channel's rows join up.
+        alt.Chart(bdf).mark_rect(opacity=_SLACK_WASH[mode]).encode(
+            y=y_enc, x=alt.datum(0), x2=alt.datum(100),
+            color=alt.Color("channel:N", scale=wash, legend=None)),
+        # Identity: a solid strip at the plot's left edge, in the channel colour.
+        alt.Chart(bdf).mark_rect().encode(
+            y=y_enc, x=alt.value(0), x2=alt.value(_SLACK_STRIP_PX),
+            color=alt.Color("channel:N", scale=wash, legend=None)),
+        alt.Chart(pd.DataFrame({"x": [25, 50, 75]})).mark_rule(
+            color=p.baseline, strokeWidth=1, strokeDash=[3, 3], opacity=0.8).encode(x="x:Q"),
+    ]
+    if not sdf.empty:
+        layers.append(
+            alt.Chart(sdf).mark_rule(strokeWidth=2.4, opacity=0.8).encode(
+                y=y_enc, x=x_enc, x2="pct2:Q",
+                color=alt.Color("travel:N", scale=travel_scale, legend=None))
+        )
+        layers.append(
+            alt.Chart(sdf).mark_point(
+                filled=True, size=52, color=p.surface, strokeWidth=1.6).encode(
+                y=y_enc, x=x_enc,
+                stroke=alt.Color("travel:N", scale=travel_scale, legend=None))
+        )
+    layers.append(
+        alt.Chart(df).mark_point(filled=True, size=100, stroke=p.surface, strokeWidth=1.8,
+                                 opacity=1).encode(
+            y=y_enc, x=x_enc,
+            color=alt.Color("travel:N", scale=travel_scale, legend=None),
+            tooltip=[alt.Tooltip("label:N", title="indicator"),
+                     alt.Tooltip("channel:N", title="channel"),
+                     alt.Tooltip("pct:Q", format=".2f", title="percentile"),
+                     alt.Tooltip("value:Q", format=".2f", title="latest value"),
+                     alt.Tooltip("travel:N", title="vs a year ago"),
+                     alt.Tooltip("as_of:N", title="as of"),
+                     alt.Tooltip("n:Q", title="observations"),
+                     alt.Tooltip("approx:N", title="approximated")])
+    )
+    if not tdf.empty:
+        # The margin key: channel name in its type colour on the group's first
+        # row, the tally of tightening / cooling / unchanged on the second.
+        name_ink = alt.Scale(domain=keys, range=[ink[k] for k in keys])
+        layers.append(alt.Chart(tdf).mark_text(
+            align="left", baseline="middle", fontSize=10.5, fontWeight="bold", font=FONT, dx=12
+        ).encode(y=alt.Y("first:N", sort=None, scale=rows_scale, axis=row_axis), x=alt.datum(100),
+                 text="name:N",
+                 color=alt.Color("key:N", scale=name_ink, legend=None)))
+        for field_, colour, offset in (("up", p.positive, 0), ("down", p.negative, 30),
+                                       ("flat", p.muted, 60)):
+            layers.append(alt.Chart(tdf[~tdf["single"]]).mark_text(
+                align="left", baseline="middle", fontSize=10, font=FONT_NUM, color=colour,
+                dx=12 + offset
+            ).encode(y=alt.Y("second:N", sort=None, scale=rows_scale, axis=row_axis), x=alt.datum(100),
+                     text=f"{field_}:N"))
+    chart = alt.layer(*layers).resolve_scale(color="independent")
+    return _apply(chart, p, height).properties(
+        padding={"left": 4, "top": 4, "bottom": 4, "right": _SLACK_LABEL_PX})
+
+
+def labor_diffusion(points, p: Palette, height: int = 260,
+                    window_start: "date | None" = None,
+                    recessions: "list[tuple[date, float]] | None" = None,
+                    ) -> alt.LayerChart:
+    """Share of indicators tightening -- how BROAD the move is."""
+    rows = []
+    for pt in points:
+        if window_start is not None and pt.when < window_start:
+            continue
+        if pt.mom is not None:
+            rows.append({"when": pt.when, "share": pt.mom, "basis": "Month-over-month"})
+        if pt.yoy is not None:
+            rows.append({"when": pt.when, "share": pt.yoy, "basis": "Year-over-year"})
+    df = pd.DataFrame(rows)
+
+    scale = alt.Scale(domain=["Month-over-month", "Year-over-year"],
+                      range=[p.muted, p.ink_secondary])
+    xfmt, xticks = _gs_time_format(list(df["when"]) if not df.empty else [])
+    x_enc = alt.X("when:T", axis=alt.Axis(title="Date", titleColor=p.muted,
+                                          format=xfmt, tickCount=xticks))
+    y_enc = alt.Y("share:Q", scale=alt.Scale(domain=[0, 100]),
+                  axis=alt.Axis(title="share of indicators tightening", format="d",
+                                values=[0, 25, 50, 75, 100]))
+
+    bands = None
+    if recessions:
+        rec = recessions
+        if window_start is not None:
+            rec = [(d, v) for d, v in recessions if d >= window_start]
+        rdf = _gs_rec_bands(rec)
+        if not rdf.empty:
+            bands = (alt.Chart(rdf).mark_rect(opacity=0.12, color="#7f7f7f")
+                     .encode(x="start:T", x2="end:T"))
+
+    half = alt.Chart(pd.DataFrame({"y": [50]})).mark_rule(
+        color=p.baseline, strokeWidth=1, strokeDash=[4, 3]).encode(y="y:Q")
+    lines = (
+        alt.Chart(df).mark_line(strokeWidth=1.6, interpolate="monotone")
+        .encode(x=x_enc, y=y_enc,
+                color=alt.Color("basis:N", scale=scale,
+                                legend=alt.Legend(title=None, orient="bottom-left",
+                                                  direction="horizontal",
+                                                  labelColor=p.ink_secondary,
+                                                  labelFontSize=10, padding=4)),
+                opacity=alt.condition(alt.datum.basis == "Year-over-year",
+                                      alt.value(1.0), alt.value(0.55)))
+    )
+    sel = alt.selection_point(on="pointerover", nearest=True, fields=["when"], empty=False)
+    hover = (
+        alt.Chart(df).mark_rule(color=p.muted, strokeWidth=1, opacity=0)
+        .encode(x=x_enc,
+                opacity=alt.condition(sel, alt.value(0.35), alt.value(0)),
+                tooltip=[alt.Tooltip("when:T", title="month", format="%b %Y"),
+                         alt.Tooltip("basis:N", title="basis"),
+                         alt.Tooltip("share:Q", format=".0f", title="% tightening")])
+        .add_params(sel)
+    )
+    layers = [b for b in (bands, half, lines, hover) if b is not None]
+    return _apply(alt.layer(*layers), p, height)
+
+
+# ------------------------------------------ unemployment decomposition (Labour tab)
+
+_DECOMP_COLS = 3
+_DECOMP_TOP = 84
+
+
+def _with_gaps(points: list[tuple[date, float]]) -> tuple[list, list]:
+    """x/y with a None wherever a month is missing, so the line breaks there
+    instead of drawing a straight run across the hole."""
+    xs: list = []
+    ys: list = []
+    prev = None
+    for d, v in points:
+        if prev is not None and (d.year * 12 + d.month) - (prev.year * 12 + prev.month) > 1:
+            xs.append(None)
+            ys.append(None)
+        xs.append(d)
+        ys.append(v)
+        prev = d
+    return xs, ys
+
+
+def unemployment_decomposition(decomp, p: Palette, height: int = 470,
+                               window_start: date | None = None,
+                               vintage: "Vintage | None" = None) -> go.Figure:
+    """Six small panels: each flow's bp contribution to the rate change."""
+    from plotly.subplots import make_subplots
+
+    colours, pale_ink = _driver_colours(p)
+    monthly_colour, smooth_colour = colours["point_3y"], colours["umich_5_10"]
+    comps = [c for c in decomp.components if c.ok] if decomp is not None else []
+    if not comps:
+        return _consumer_empty(go.Figure(), "No labour-flow data", p, height)
+
+    def cut(points):
+        return [(d, v) for d, v in points if window_start is None or d >= window_start]
+
+    rows = math.ceil(len(comps) / _DECOMP_COLS)
+    fig = make_subplots(rows=rows, cols=_DECOMP_COLS,
+                        subplot_titles=[c.label for c in comps],
+                        horizontal_spacing=0.07, vertical_spacing=0.16)
+    all_dates: list[date] = []
+    for i, c in enumerate(comps):
+        r, col = i // _DECOMP_COLS + 1, i % _DECOMP_COLS + 1
+        mx, my = _with_gaps(cut(c.monthly))
+        sx, sy = _with_gaps(cut(c.smoothed))
+        all_dates += [d for d in mx if d is not None]
+        fig.add_trace(go.Scatter(
+            x=mx, y=my, mode="lines", name="Monthly", connectgaps=False,
+            line=dict(width=1.1, color=monthly_colour),
+            hovertemplate=f"{c.label}, monthly: %{{y:.1f}}bp<extra></extra>"), row=r, col=col)
+        fig.add_trace(go.Scatter(
+            x=sx, y=sy, mode="lines", name="3 Month Average", connectgaps=False,
+            line=dict(width=2.4, color=smooth_colour),
+            hovertemplate=f"{c.label}, 3-mo avg: %{{y:.1f}}bp<extra></extra>"), row=r, col=col)
+    if not all_dates:
+        return _consumer_empty(go.Figure(), "No labour-flow data in this window", p, height)
+
+    subtitle = ("<i>Basis point (bp) contribution to the unemployment rate change  ·</i>  "
+                f"{_named('Monthly', pale_ink)} <i>and</i> "
+                f"{_named('3 Month Average', smooth_colour)}")
+    latest = max(all_dates)
+    bottom = _footer(fig, [f"Latest data: {latest:%B %Y}  ·  ABS gross flows (matched-sample rates x "
+                           "SA stocks) over the labour force  ·  Source: ABS, RBA",
+                           vintage.line if vintage else ""], p)
+    fig.update_layout(
+        height=height,
+        title=dict(text="Unemployment Rate Decomposition", x=0.0, xanchor="left",
+                   font=title_font(p), subtitle=dict(text=subtitle, font=subtitle_font(p))),
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+        font=dict(color=p.ink, size=11),
+        margin=dict(l=44, r=16, t=_DECOMP_TOP, b=bottom),
+        showlegend=False, hovermode="x unified")
+    # Panel titles are annotations make_subplots adds; restyle them as labels.
+    for ann in fig.layout.annotations:
+        if ann.text in {c.label for c in comps}:
+            ann.font = dict(size=12, color=p.ink_secondary)
+            ann.yshift = -2
+    min_date, max_date = min(all_dates), max(all_dates)
+    xfmt, xdtick = _monthly_ticks((max_date - min_date).days)
+    fig.update_xaxes(type="date", tickformat=xfmt, dtick=xdtick, hoverformat="%b %Y",
+                     showgrid=False, range=[min_date - timedelta(days=15),
+                                            max_date + timedelta(days=15)],
+                     tickfont=dict(size=10))
+    fig.update_yaxes(gridcolor=p.grid, zeroline=False, nticks=5, tickformat=",.1~f",
+                     tickfont=dict(size=10))
+    return fig
+
+
+def _gs_rec_bands(rec: list[tuple[date, float]]) -> pd.DataFrame:
+    """Run-length-encode recession months into (start, end) rects."""
+    if not rec:
+        return pd.DataFrame(columns=["start", "end"])
+    runs: list[tuple[date, date]] = []
+    cur: date | None = None
+    for d, v in rec:
+        if v >= 0.5:
+            if cur is None:
+                cur = d
+        elif cur is not None:
+            runs.append((cur, d))
+            cur = None
+    if cur is not None:
+        runs.append((cur, rec[-1][0]))
+    df = pd.DataFrame(runs, columns=["start", "end"])
+    if not df.empty:
+        df["start"] = pd.to_datetime(df["start"])
+        df["end"] = pd.to_datetime(df["end"])
+    return df
+
+
+def _gs_time_format(dates: list[date]) -> tuple[str, int]:
+    """X-axis label format + tick count fitted to the plotted span."""
+    if not dates:
+        return "%Y", 6
+    span = (max(dates) - min(dates)).days
+    if span <= 3 * 366:
+        return "%b %Y", 8
+    return "%Y", 6
+
+
+def _gs_line(series: list[tuple[date, float]], title: str, ylabel: str,
+             rec: list[tuple[date, float]], p: Palette, height: int,
+             invert: bool = False, show_title: bool = True,
+             vintage: "Vintage | None" = None) -> alt.LayerChart:
+    """Single-line chart with technical-recession shading."""
+    df = pd.DataFrame(series, columns=["date", "v"]).dropna()
+    rdf = _gs_rec_bands(rec)
+    bands = (
+        alt.Chart(rdf).mark_rect(opacity=0.12, color="#7f7f7f")
+        .encode(x="start:T", x2="end:T")
+        if not rdf.empty
+        else alt.Chart(pd.DataFrame({"start": [], "end": []})).mark_rect(opacity=0)
+    )
+    xfmt, xticks = _gs_time_format([d for d, _ in series])
+    line = (
+        alt.Chart(df)
+        .mark_line(strokeWidth=2, interpolate="monotone", color=p.positive)
+        .encode(
+            x=alt.X("date:T", axis=alt.Axis(title=None, format=xfmt,
+                                            tickCount=xticks,
+                                            labelColor=p.muted, gridColor=p.grid)),
+            y=alt.Y("v:Q", axis=alt.Axis(title=ylabel, titleColor=p.muted,
+                                         labelColor=p.muted, gridColor=p.grid),
+                    scale=alt.Scale(nice=True, padding=0.05, zero=False,
+                                    reverse=invert)),
+            tooltip=[
+                alt.Tooltip("date:T", title=title, format="%b %Y"),
+                alt.Tooltip("v:Q", title=ylabel, format=".1f"),
+            ],
+        )
+    )
+    props: dict = {"height": height, "width": "container"}
+    if show_title:
+        props["title"] = vintage_title(title, vintage, p)
+    return (
+        alt.layer(bands, line)
+        .properties(**props)
+        .configure_view(stroke="transparent")
+        .configure_axis(**{k: v for k, v in _base(p)["config"]["axis"].items()})
+    )
+
+
+def _gs_dual_line(left_series: list[tuple[date, float]],
+                  right_series: list[tuple[date, float]],
+                  title: str, left_label: str, right_label: str,
+                  rec: list[tuple[date, float]], p: Palette, height: int,
+                  left_reverse: bool = False,
+                  vintage: "Vintage | None" = None) -> alt.LayerChart:
+    """Dual-line chart: two y-axes, recession shading, compact legend."""
+    ldf = pd.DataFrame(left_series, columns=["date", "v"]).dropna()
+    rdf = pd.DataFrame(right_series, columns=["date", "v"]).dropna()
+
+    rdfb = _gs_rec_bands(rec)
+    bands = (
+        alt.Chart(rdfb).mark_rect(opacity=0.12, color="#7f7f7f")
+        .encode(x="start:T", x2="end:T")
+        if not rdfb.empty
+        else alt.Chart(pd.DataFrame({"start": [], "end": []})).mark_rect(opacity=0)
+    )
+
+    xfmt, xticks = _gs_time_format(
+        [d for d, _ in left_series] + [d for d, _ in right_series])
+
+    ll = (
+        alt.Chart(ldf)
+        .mark_line(strokeWidth=2, interpolate="monotone", color=p.positive)
+        .encode(
+            x=alt.X("date:T", axis=alt.Axis(title=None, format=xfmt,
+                                            tickCount=xticks,
+                                            labelColor=p.muted, gridColor=p.grid)),
+            y=alt.Y("v:Q", axis=alt.Axis(title=left_label, titleColor=p.muted,
+                                         labelColor=p.muted, gridColor=p.grid),
+                    scale=alt.Scale(nice=True, padding=0.05, zero=False,
+                                    reverse=left_reverse)),
+            tooltip=[alt.Tooltip("date:T", title=left_label, format="%b %Y"),
+                     alt.Tooltip("v:Q", title=left_label, format=".2f")],
+        )
+    )
+    rl = (
+        alt.Chart(rdf)
+        .mark_line(strokeWidth=2, interpolate="monotone", color=p.negative,
+                   strokeDash=[4, 3])
+        .encode(
+            x=alt.X("date:T", axis=alt.Axis(title=None, format=xfmt,
+                                            tickCount=xticks,
+                                            gridColor="transparent")),
+            y=alt.Y("v:Q",
+                    axis=alt.Axis(title=right_label, titleColor=p.muted,
+                                  labelColor=p.muted, orient="right",
+                                  gridColor="transparent"),
+                    scale=alt.Scale(zero=False, nice=True, padding=0.1)),
+            tooltip=[alt.Tooltip("date:T", title=right_label, format="%b %Y"),
+                     alt.Tooltip("v:Q", title=right_label, format=".2f")],
+        )
+    )
+    return (
+        alt.layer(bands, ll, rl)
+        .resolve_scale(y="independent")
+        .properties(title=vintage_title(title, vintage, p),
+                    height=height, width="container")
+        .configure_view(stroke="transparent")
+        .configure_axis(**{k: v for k, v in _base(p)["config"]["axis"].items()})
+    )
+
+
+def _gs_bar(series: list[tuple[date, float]], title: str, ylabel: str,
+            p: Palette, height: int,
+            vintage: "Vintage | None" = None) -> alt.LayerChart:
+    """Bar chart — positive bars blue, negative red (for net job gains)."""
+    df = pd.DataFrame(series, columns=["date", "v"]).dropna()
+    df["color"] = df["v"].apply(lambda v: p.positive if v >= 0 else p.negative)
+    xfmt, xticks = _gs_time_format(list(df["date"]))
+    bars = (
+        alt.Chart(df)
+        .mark_bar(strokeWidth=0, binSpacing=0)
+        .encode(
+            x=alt.X("date:T", timeUnit="yearmonth",
+                    axis=alt.Axis(title=None, format=xfmt,
+                                  tickCount=xticks, labelColor=p.muted,
+                                  gridColor=p.grid)),
+            y=alt.Y("v:Q", axis=alt.Axis(title=ylabel, titleColor=p.muted,
+                                         labelColor=p.muted, gridColor=p.grid),
+                    scale=alt.Scale(nice=True, padding=0.05)),
+            color=alt.Color("color:N", scale=None, legend=None),
+            tooltip=[
+                alt.Tooltip("date:T", title="Month", format="%b %Y"),
+                alt.Tooltip("v:Q", title=ylabel, format=",.0f"),
+            ],
+        )
+    )
+    return (
+        bars
+        .properties(title=vintage_title(title, vintage, p),
+                    height=height, width="container")
+        .configure_view(stroke="transparent")
+        .configure_axis(**{k: v for k, v in _base(p)["config"]["axis"].items()})
+    )
+
+
+_SLACK_MORE = "#bf5a67"        # red: more slack
+_SLACK_LESS = "#537bb9"        # blue: less slack
+_SLACK_MORE_DARK = "#a8414f"   # the source's own tone
+_SLACK_LESS_DARK = "#33507d"   # the source's own tone
+
+_SLACK_GAMMA = 0.75
+
+
+def _slack_targets(p: Palette) -> tuple[str, str]:
+    """(more-slack, less-slack) fills at full saturation, for this theme."""
+    if p.mode == "dark":
+        return _SLACK_MORE_DARK, _SLACK_LESS_DARK
+    return _SLACK_MORE, _SLACK_LESS
+
+
+def slack_heat_fill(pct: float, p: Palette) -> str:
+    """Diverging fill for a slack percentile: 0 red, 50 neutral, 100 blue."""
+    more, less = _slack_targets(p)
+    t = min(1.0, abs(pct - 50.0) / 50.0) ** _SLACK_GAMMA
+    return _lerp_hex(p.surface, less if pct >= 50.0 else more, t)
+
+
+def labor_slack_heatmap(heat: "labor.Heatmap", p: Palette) -> str:
+    """The slack heatmap as HTML, matching the source grid's layout."""
+    if not heat.rows:
+        return ""
+
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    head = "".join(
+        f"<th class='h'>{m.strftime('%b')}<br><span class='yr'>{m.strftime('%y')}</span></th>"
+        for m in heat.months)
+
+    body: list[str] = []
+    for row in heat.rows:
+        ind = row.indicator
+        mark = ("<span class='approx' title='approximated \u2014 not an exact "
+                "match for the source row'>~</span>") if ind.approximate else ""
+        cells: list[str] = []
+        for cell in row.cells:
+            if cell.pct is None:
+                cells.append("<td class='c na'></td>")
+                continue
+            fill = slack_heat_fill(cell.pct, p)
+            tip = (f"{ind.label} · {cell.month.strftime('%b %Y')}: "
+                   f"{cell.pct:.0f}th percentile"
+                   f" ({'less' if cell.pct >= 50 else 'more'} slack than "
+                   f"{cell.pct if cell.pct >= 50 else 100 - cell.pct:.0f}% of "
+                   f"months since {labor.BASE_START.year})")
+            if cell.value is not None:
+                tip += f" · value {cell.value:,.2f}"
+            cells.append(
+                f"<td class='c' title='{esc(tip)}' "
+                f"style='background:{fill};color:{p.ink}'>"
+                f"{cell.pct:.0f}</td>")
+        body.append(f"<tr><td class='nm'>{esc(ind.label)}{mark}</td>"
+                    f"{''.join(cells)}</tr>")
+
+    more, less = _slack_targets(p)
+    stops = "".join(
+        f"<span class='g' style='background:{slack_heat_fill(v, p)}'></span>"
+        for v in range(0, 101, 5))
+    legend = (
+        f"<div class='fomc-heatmap-legend'>"
+        f"<span class='gl'>more slack</span>{stops}"
+        f"<span class='gl'>less slack</span>"
+        f"<span class='gt'>&nbsp;· percentile against each series' own history "
+        f"since {labor.BASE_START.year} · blank = not yet published</span></div>")
+
+    return (f"<table class='fomc-slackmap'>"
+            f"<thead><tr><th class='nm'></th>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table>{legend}")
+
+
+# ------------------------------------------ labour diffusion by channel (Labour tab)
+
+#: One hue per channel from the first seven slots of the house categorical ramp
+#: (positive and accent are slots 1 and 3). Each channel keeps the hue it had
+#: before Stated demand split out of Hiring, which took slot 7, violet. In
+#: stacking order -- blue, orange, violet, aqua, yellow, magenta, green -- the
+#: set validates as adjacent pairs against both page surfaces: worst CVD dE
+#: 9.1 light / 8.4 dark, normal-vision 19.6 / 19.3. Aqua, yellow and magenta
+#: sit under 3:1 on the light page, so every value is also printed in the
+#: readout and the hover rather than left to the colour.
+_CHANNEL_COLOURS = {
+    "light": {"firing": "#2a78d6", "hiring": "#eb6834", "demand": "#4a3aa7",
+              "employment": "#1baf7a", "confidence": "#eda100",
+              "participation": "#e87ba4", "slack": "#008300"},
+    "dark": {"firing": "#3987e5", "hiring": "#d95926", "demand": "#9085e9",
+             "employment": "#199e70", "confidence": "#c98500",
+             "participation": "#d55181", "slack": "#008300"},
+}
+#: Each channel's colour as TYPE (readout, panel titles, subtitle): the same
+#: hue stepped until it clears 4.5:1 on that mode's page. The mark colours
+#: are tuned for fills and several are too pale, or on black too dark, to read.
+_CHANNEL_INK = {
+    "light": {"firing": "#1f64bd", "hiring": "#b84a1c", "demand": "#4a3aa7",
+              "employment": "#0e7a54", "confidence": "#8a5e00",
+              "participation": "#b8446f", "slack": "#008300"},
+    "dark": {"firing": "#3987e5", "hiring": "#d95926", "demand": "#9085e9",
+             "employment": "#199e70", "confidence": "#c98500",
+             "participation": "#d55181", "slack": "#2fa82f"},
+}
+
+#: The page's sub-heading names both charts, so each figure opens on its colour
+#: key alone: one line for the bars, the panel titles for the breadth grid.
+_CHANNEL_TOP = 56
+_CHANNEL_BREADTH_TOP = 30
+#: Past this many months a 2px surface seam between segments eats the bar.
+_CHANNEL_SEAM_MONTHS = 120
+
+_BASIS_SHORT = {"yoy": "y/y", "mom": "m/m"}
+
+
+def channel_colours(p: Palette) -> dict[str, str]:
+    return _CHANNEL_COLOURS["dark" if p.mode == "dark" else "light"]
+
+
+def channel_ink(p: Palette) -> dict[str, str]:
+    return _CHANNEL_INK["dark" if p.mode == "dark" else "light"]
+
+
+def _in_window(points, window_start: date | None):
+    return [pt for pt in points if window_start is None or pt.when >= window_start]
+
+
+def _recession_rects(fig: go.Figure, recessions, lo: date, hi: date, **where) -> None:
+    """Technical-recession months as grey bands, clipped to the plotted span."""
+    rdf = _gs_rec_bands(recessions or [])
+    for start, end in zip(rdf.get("start", []), rdf.get("end", [])):
+        s, e = max(start.date(), lo), min(end.date(), hi)
+        if s < e:
+            fig.add_vrect(x0=s, x1=e, fillcolor="#7f7f7f", opacity=0.12,
+                          line_width=0, layer="below", **where)
+
+
+_NBSP = " "
+_HOVER_LABEL_W = max(len(i.label) for i in labor.INDICATORS)
+
+
+def _hover_num(v: float | None) -> str:
+    """Two decimals throughout; claims-sized levels in thousands so the column
+    stays narrow (202,750 -> 202.75k)."""
+    if v is None:
+        return "—"
+    return f"{v / 1000:,.2f}k" if abs(v) >= 10_000 else f"{v:,.2f}"
+
+
+def _pad(text: str, width: int, right: bool = False) -> str:
+    """Pad with non-breaking spaces, which a hover label does not collapse."""
+    fill = _NBSP * max(0, width - len(text))
+    return fill + text if right else text + fill
+
+
+def _channel_hover(pt, ch, basis: str, p: Palette, ink: dict[str, str]) -> str:
+    """One bar segment's hover card: the channel's reading, then each indicator
+    in it -- its share of the bar, which way it moved in each averaged month,
+    and its latest value against the one it is compared with."""
+    arrow = {1.0: (p.positive, "▲"), 0.5: (p.muted, "·"), 0.0: (p.negative, "▼"),
+             None: (p.muted, _NBSP)}
+    vs = "yr ago" if basis == "yoy" else "mth ago"
+    breadth = pt.breadth[ch.key]
+    muted = f"<span style='color:{p.muted}'>"
+    lines = [
+        f"<span style='color:{ink[ch.key]}'><b>{html.escape(ch.label)}</b></span>"
+        f"{_NBSP * 2}<b>{pt.contribution[ch.key]:+.2f} pp</b>",
+        f"{muted}{pt.when:%b %Y} · {_BASIS_SHORT[basis]} · {labor.DIFFUSION_SMOOTH}-mo avg"
+        f" · breadth {'—' if breadth is None else f'{breadth:.2f}%'}"
+        f" of {pt.reporting[ch.key]}</span>",
+        f"{muted}{_pad('', _HOVER_LABEL_W)}{_pad('pp', 7, right=True)}{_NBSP * 2}"
+        + _NBSP.join(f"{m:%b}" for m in pt.months) + f"{_NBSP * 2}latest vs {vs}</span>",
+    ]
+    for key in ch.members:
+        comp = pt.components[key]
+        marks = _NBSP.join(f"<span style='color:{arrow[v][0]}'>{_NBSP}{arrow[v][1]}{_NBSP}</span>"
+                           for v in comp.votes)
+        lines.append(
+            f"{html.escape(_pad(labor.BY_KEY[key].label, _HOVER_LABEL_W))}"
+            f"{_pad(f'{comp.contribution:+.2f}', 7, right=True)}{_NBSP * 2}{marks}{_NBSP * 2}"
+            f"{_hover_num(comp.now)} {muted}vs</span> {_hover_num(comp.prior)}")
+    return "<br>".join(lines)
+
+
+def labor_channels(points, p: Palette, basis: str = "yoy", height: int = 430,
+                   window_start: date | None = None,
+                   recessions: "list[tuple[date, float]] | None" = None,
+                   vintage: "Vintage | None" = None) -> go.Figure:
+    """The diffusion index split into its channels: bars from the 50 line that
+    add up, month by month, to the headline drawn over them."""
+    fig = go.Figure()
+    pts = _in_window(points, window_start)
+    if not pts:
+        return _consumer_empty(fig, "No diffusion history in this window", p, height)
+
+    colours, ink = channel_colours(p), channel_ink(p)
+    whens = [pt.when for pt in pts]
+    seam = len(pts) <= _CHANNEL_SEAM_MONTHS
+    for ch in labor.CHANNELS:
+        fig.add_trace(go.Bar(
+            x=whens, y=[pt.contribution[ch.key] for pt in pts], name=ch.label,
+            marker=dict(color=colours[ch.key],
+                        line=dict(color=p.surface, width=1.0 if seam else 0)),
+            hovertext=[_channel_hover(pt, ch, basis, p, ink) for pt in pts],
+            hovertemplate="%{hovertext}<extra></extra>",
+            hoverlabel=dict(bordercolor=colours[ch.key])))
+    # Straight segments, not a spline: the line is the sum of the bars, and a
+    # spline would overshoot their net between months.
+    fig.add_trace(go.Scatter(
+        x=whens, y=[pt.share - 50.0 for pt in pts], name="Headline", mode="lines",
+        line=dict(color=p.ink, width=2.2),
+        customdata=[[pt.share, pt.share - 50.0, pt.n] for pt in pts],
+        hovertemplate=("<b>Headline  %{customdata[0]:.2f}% tightening</b><br>"
+                       "<span style='color:" + p.muted + "'>%{x|%b %Y} · "
+                       f"{_BASIS_SHORT[basis]} · {labor.DIFFUSION_SMOOTH}-mo avg · "
+                       "%{customdata[1]:+.2f} pp from 50 · n = %{customdata[2]}</span>"
+                       "<extra></extra>"),
+        hoverlabel=dict(bordercolor=p.ink)))
+
+    # Symmetric about 50 so a bar's length reads the same above and below; the
+    # ticks are labelled as the share itself, the bars as distance from 50.
+    ups = [sum(v for v in pt.contribution.values() if v > 0) for pt in pts]
+    downs = [sum(v for v in pt.contribution.values() if v < 0) for pt in pts]
+    reach = max([abs(v) for v in ups + downs] + [abs(pt.share - 50) for pt in pts] + [10.0])
+    top = min(50.0, 10.0 * math.ceil(reach / 10.0 + 0.05))
+    step = 10 if top <= 30 else 25
+    ticks = [v for v in range(-50, 51, step) if abs(v) <= top]
+
+    lo, hi = min(whens), max(whens)
+    _recession_rects(fig, recessions, lo, hi)
+    latest = pts[-1]
+    _readout(fig, f"{latest.when:%b %Y} · {_BASIS_SHORT[basis]}",
+             [("Headline", f"{latest.share:.0f}%", p.ink)]
+             + [(ch.label, f"{latest.contribution[ch.key]:+.1f}", ink[ch.key])
+                for ch in labor.CHANNELS], p)
+
+    names = "  ·  ".join(f'<span style="color:{ink[ch.key]}"><b>{html.escape(ch.label)}</b></span>'
+                         for ch in labor.CHANNELS)
+    title = dict(text=(f"{names}<br><span style='color:{p.muted};font-size:11px'>"
+                       "Net contribution, pp from 50  ·  line = headline</span>"),
+                 x=0.0, xanchor="left", y=1.0, yanchor="top", pad=dict(t=6),
+                 font=dict(size=12, color=p.ink_secondary))
+    bottom = _footer(fig, [f"Latest data: {latest.when:%B %Y}  ·  {latest.n} indicators "
+                           f"reporting  ·  {labor.DIFFUSION_SMOOTH}-month average  ·  "
+                           "Shading: technical recessions (two falling GDP quarters)  ·  Source: ABS, RBA, NAB",
+                           vintage.line if vintage else ""], p)
+    _monthly_frame(fig, p, height, whens, title, bottom, "d", top=_CHANNEL_TOP)
+    # One card per segment, not one per month: the card is the breakdown of the
+    # channel under the pointer. The number face keeps its columns aligned.
+    fig.update_layout(barmode="relative", bargap=0.18 if seam else 0.0,
+                      hovermode="closest",
+                      hoverlabel=dict(bgcolor=p.surface, font=dict(family=FONT_NUM, size=11,
+                                                                    color=p.ink),
+                                      align="left"))
+    fig.update_yaxes(range=[-top, top], tickvals=ticks,
+                     ticktext=[f"{50 + v:.0f}" for v in ticks], ticksuffix="")
+    return fig
+
+
+def labor_channel_breadth(points, p: Palette, height: int = 360,
+                          window_start: date | None = None,
+                          recessions: "list[tuple[date, float]] | None" = None,
+                          ) -> go.Figure:
+    """Each channel's own diffusion, 0-100: the other factor in its bar.
+
+    The bars are weight x breadth, and the weight is only how many indicators a
+    channel holds. These panels take the weight out, so eight Slack series
+    moving a little are not mistaken for two Participation series moving hard.
+    """
+    from plotly.subplots import make_subplots
+
+    pts = _in_window(points, window_start)
+    if not pts:
+        return _consumer_empty(go.Figure(), "No diffusion history in this window", p, height)
+    colours, ink = channel_colours(p), channel_ink(p)
+    whens = [pt.when for pt in pts]
+    latest = pts[-1]
+
+    def panel_title(ch) -> str:
+        # Name and latest value only: four panels a row leave no room for more,
+        # and each channel's series count is in the section's ? popover.
+        b = latest.breadth[ch.key]
+        tail = f"{b:.0f}%" if b is not None else "—"
+        return (f'<span style="color:{ink[ch.key]}"><b>{html.escape(ch.label)}</b></span>'
+                f'<span style="color:{p.muted}">  ·  </span><b>{tail}</b>')
+
+    cols = 4
+    fig = make_subplots(rows=math.ceil(len(labor.CHANNELS) / cols), cols=cols,
+                        subplot_titles=[panel_title(ch) for ch in labor.CHANNELS],
+                        shared_xaxes=True, shared_yaxes=True,
+                        horizontal_spacing=0.03, vertical_spacing=0.2)
+    lo, hi = min(whens), max(whens)
+    for i, ch in enumerate(labor.CHANNELS):
+        r, c = i // cols + 1, i % cols + 1
+        xs, ys = _with_gaps([(pt.when, pt.breadth[ch.key]) for pt in pts
+                             if pt.breadth[ch.key] is not None])
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=ch.label, connectgaps=False,
+            line=dict(color=colours[ch.key], width=2),
+            hovertemplate=f"{ch.label}: %{{y:.2f}}% tightening<extra></extra>"),
+            row=r, col=c)
+        fig.add_hline(y=50, line=dict(color=p.baseline, width=1, dash="dot"),
+                      row=r, col=c)
+        _recession_rects(fig, recessions, lo, hi, row=r, col=c)
+    # Panel titles are annotations make_subplots centres; set them flush left
+    # over their own panel, the way the page's headings sit.
+    for i, ann in enumerate(fig.layout.annotations[:len(labor.CHANNELS)]):
+        axis = fig.layout["xaxis" if i == 0 else f"xaxis{i + 1}"]
+        ann.update(x=axis.domain[0], xanchor="left", font=dict(size=12, color=p.ink))
+    fig.update_layout(
+        height=height,
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane, font=dict(color=p.ink, size=11),
+        margin=dict(l=44, r=16, t=_CHANNEL_BREADTH_TOP, b=34),
+        showlegend=False, hovermode="x unified")
+    xfmt, xdtick = _monthly_ticks((hi - lo).days)
+    fig.update_xaxes(type="date", tickformat=xfmt, dtick=xdtick, hoverformat="%b %Y",
+                     showgrid=False, tickfont=dict(size=10),
+                     range=[lo - timedelta(days=20), hi + timedelta(days=20)])
+    fig.update_yaxes(range=[0, 100], tickvals=[0, 50, 100], gridcolor=p.grid,
+                     zeroline=False, tickfont=dict(size=10))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Labour market grid, employment by component, WPI heatmap (AU twins)
+# ---------------------------------------------------------------------------
+
+def au_unemployment_chart(data, p: Palette, height: int = 220,
+                          vintage: "Vintage | None" = None) -> alt.LayerChart:
+    return _gs_line(data.get("UR", []), "Unemployment Rate", "Percent",
+                    data.get("RECESSION", []), p, height, vintage=vintage)
+
+
+def au_participation_chart(data, p: Palette, height: int = 220,
+                           vintage: "Vintage | None" = None) -> alt.LayerChart:
+    return _gs_line(data.get("PR", []), "Labour Force Participation Rate", "Percent",
+                    data.get("RECESSION", []), p, height, vintage=vintage)
+
+
+def au_emratio_chart(data, p: Palette, height: int = 220,
+                     vintage: "Vintage | None" = None) -> alt.LayerChart:
+    return _gs_line(data.get("EPOP", []), "Employment-to-Population Ratio", "Percent",
+                    data.get("RECESSION", []), p, height, vintage=vintage)
+
+
+def au_jwgap_chart(data, p: Palette, height: int = 220) -> alt.LayerChart:
+    return _gs_line(data.get("JWGAP", []), "Jobs-Workers Gap*", "Percent of labour force",
+                    data.get("RECESSION", []), p, height, show_title=False)
+
+
+def au_job_loss_switching_chart(data, p: Palette, height: int = 220,
+                                vintage: "Vintage | None" = None) -> alt.LayerChart:
+    """The US layoffs-and-quits pair, from what Australia publishes: the
+    employed-to-unemployed flow rate and the job-switching proxy."""
+    return _gs_dual_line(left_series=data.get("JOB_LOSS", []),
+                         right_series=data.get("SWITCHING", []),
+                         title="Job Loss Rate & Job Switching",
+                         left_label="Emp to unemp, % of employed",
+                         right_label="Under a year in job, %",
+                         rec=data.get("RECESSION", []), p=p, height=height, vintage=vintage)
+
+
+def au_employment_change_chart(data, p: Palette, height: int = 220,
+                               vintage: "Vintage | None" = None,
+                               since: date | None = date(2023, 1, 1)) -> alt.LayerChart:
+    series = [(d, v) for d, v in data.get("EMP_CHANGE_3MA", []) if since is None or d >= since]
+    return _gs_bar(series, "Net Employment Gains", "Thousands (3m avg)", p, height,
+                   vintage=vintage)
+
+
+def _clip_window(series, window_start: date | None):
+    if window_start is None:
+        return list(series or [])
+    return [(d, v) for d, v in (series or []) if d >= window_start]
+
+
+def employment_components_chart(comp: dict, p: Palette, height: int = 380,
+                                window_start: date | None = None,
+                                recessions: list | None = None) -> alt.LayerChart:
+    """Quarterly change in filled jobs ('000) by component, stacked, with the
+    total and the market sector as lines -- the US payrolls-by-component chart
+    on the ABS Labour Account."""
+    from core import jobs_wages as jw
+    colour = {"market": p.positive, "health_ed": p.accent, "public_admin": p.muted}
+    bar_rows = []
+    for order, (key, label) in enumerate(jw.COMPONENTS):
+        for d, v in _clip_window(comp.get(key, []), window_start):
+            bar_rows.append({"date": d, "v": v, "component": label, "colour": colour[key],
+                             "order": order})
+    bdf = pd.DataFrame(bar_rows)
+    line_rows = []
+    for key, label, ink, dash in (("total", "Total filled jobs", p.ink, [0]),
+                                  ("market", "Market sector", p.negative, [4, 3])):
+        for d, v in _clip_window(comp.get(key, []), window_start):
+            line_rows.append({"date": d, "v": v, "line": label, "colour": ink, "dash": dash})
+    ldf = pd.DataFrame(line_rows)
+    for df in (bdf, ldf):
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+    xfmt, xticks = _gs_time_format(list(bdf["date"]) + list(ldf["date"])
+                                   if not (bdf.empty and ldf.empty) else [])
+    y = alt.Y("v:Q", axis=alt.Axis(title="Quarterly change ('000 jobs)", format=",.0f",
+                                   titleColor=p.muted, labelColor=p.muted, gridColor=p.grid),
+              scale=alt.Scale(nice=True))
+    x = alt.X("date:T", timeUnit="yearquarter",
+              axis=alt.Axis(title=None, format=xfmt, tickCount=xticks, labelColor=p.muted,
+                            gridColor=p.grid))
+    layers = []
+    rdf = _gs_rec_bands(_clip_window(recessions or [], window_start))
+    if not rdf.empty:
+        layers.append(alt.Chart(rdf).mark_rect(opacity=0.12, color="#7f7f7f")
+                      .encode(x="start:T", x2="end:T"))
+    if not bdf.empty:
+        layers.append(alt.Chart(bdf).mark_bar(strokeWidth=0, binSpacing=1).encode(
+            x=x, y=y, color=alt.Color("colour:N", scale=None), order=alt.Order("order:Q"),
+            tooltip=[alt.Tooltip("date:T", title="Quarter", format="%b %Y"),
+                     alt.Tooltip("component:N", title="Component"),
+                     alt.Tooltip("v:Q", title="Change ('000)", format=",.1f")]))
+    if not ldf.empty:
+        layers.append(alt.Chart(ldf).mark_line(strokeWidth=2.5, interpolate="monotone").encode(
+            x=alt.X("date:T", timeUnit="yearquarter", bandPosition=0.5,
+                    axis=alt.Axis(title=None, format=xfmt, tickCount=xticks)),
+            y=y, color=alt.Color("colour:N", scale=None),
+            strokeDash=alt.StrokeDash("dash:N", scale=None),
+            tooltip=[alt.Tooltip("date:T", title="Quarter", format="%b %Y"),
+                     alt.Tooltip("line:N", title="Series"),
+                     alt.Tooltip("v:Q", title="Change ('000)", format=",.1f")]))
+    return (alt.layer(*layers).properties(height=height, width="container")
+            .configure_view(stroke="transparent")
+            .configure_axis(**{k: v for k, v in _base(p)["config"]["axis"].items()}))
+
+
+def _esc_html(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _quarter_label(d: date) -> str:
+    return f"{['Mar', 'Jun', 'Sep', 'Dec'][(d.month - 1) // 3]}-{d:%y}"
+
+
+def wpi_heatmap_table(wpi: dict, shares: dict, p: Palette) -> str:
+    """WPI year-ended growth by industry, the latest eight quarters newest first,
+    each row coloured on its own scale (row min deep red -> row max dark green),
+    as the US sector wage heatmap colours AHE."""
+    from core import jobs_wages as jw
+    anchor = [d for d, _ in wpi.get("7|TOT", [])]
+    if not anchor:
+        return ""
+    cols = anchor[-jw.HEATMAP_QUARTERS:][::-1]
+    head = "".join(f"<th class='h'>{_quarter_label(d)}</th>" for d in cols)
+    body = []
+    for row in jw.WAGE_ROWS:
+        yoy = dict(wpi.get(row.key, []))
+        live = [v for v in (yoy.get(d) for d in cols) if v is not None]
+        if not live:
+            continue
+        vmin, vmax = min(live), max(live)
+        share = shares.get(row.jobs_key) if row.jobs_key else None
+        cls = "agg" if row.level < 2 else ""
+        share_td = (f"<td class='sh {cls}'>{share:.0f}%</td>" if share is not None
+                    else f"<td class='sh {cls}'>—</td>")
+        indent = "&nbsp;&nbsp;" * row.level
+        cells = []
+        for i, d in enumerate(cols):
+            v = yoy.get(d)
+            if v is None:
+                cells.append("<td class='c na'>—</td>")
+                continue
+            t = 0.5 if vmax == vmin else (v - vmin) / (vmax - vmin)
+            fill = _heat_colour(t)
+            tip = f"{_esc_html(row.label)} · {_quarter_label(d)}: {v:.1f}% y/y"
+            bold = " bold" if i == 0 else ""
+            cells.append(f"<td class='c{bold}' title='{tip}' "
+                         f"style='background:{fill};color:{_readable_ink(fill)}'>{v:.1f}</td>")
+        body.append(f"<tr>{share_td}<td class='nm {cls}'>{indent}{_esc_html(row.label)}</td>"
+                    f"{''.join(cells)}</tr>")
+    stops = "".join(f"<span class='g' style='background:{_heat_colour(t)}'></span>"
+                    for t in (i / 16 for i in range(17)))
+    legend = ("<div class='fomc-heatmap-legend'><span class='gl'>low</span>" + stops
+              + "<span class='gl'>high</span><span class='gt'>&nbsp;· colour scaled within "
+                "each row (row min → row max)</span></div>")
+    return ("<table class='fomc-heatmap'><thead><tr><th class='sh'>share of jobs</th>"
+            f"<th class='nm'>Industry</th>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table>{legend}")

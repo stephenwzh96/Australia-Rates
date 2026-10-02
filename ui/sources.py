@@ -268,6 +268,251 @@ def flow_series() -> dict:
     }
 
 
+def _month(d: date) -> date:
+    """First of the reference month: RBA tables date a month or a quarter on its
+    last day, the ABS workbooks on its first."""
+    return date(d.year, d.month, 1)
+
+
+def _by_month(series) -> list[tuple[date, float]]:
+    return sorted((_month(d), v) for d, v in series or [])
+
+
+_E = ("Employed full-time", "Employed part-time")
+_U, _N = "Unemployed", "Not in the labour force (NILF)"
+_MATCHED = _E + (_U, _N)
+
+
+def _flow_sum(flows: dict, origins, destinations) -> dict[date, float]:
+    out: dict[date, float] = {}
+    for o in origins:
+        for d in destinations:
+            for when, v in flows.get(f"{o}>{d}", []):
+                out[when] = out.get(when, 0.0) + v
+    return out
+
+
+def _deseasonalise(series: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """Stable additive seasonals out of a monthly series: each calendar month's
+    average gap to the centred 12-month mean is subtracted. The ABS publishes
+    the gross flows unadjusted, and a percentile rank of a seasonal series would
+    mostly rank the season."""
+    vals = [v for _, v in series]
+    if len(vals) < 36:
+        return series
+    gaps: dict[int, list[float]] = {}
+    for i in range(6, len(vals) - 6):
+        centred = (sum(vals[i - 6:i + 6]) + sum(vals[i - 5:i + 7])) / 24.0
+        gaps.setdefault(series[i][0].month, []).append(vals[i] - centred)
+    factor = {m: sum(g) / len(g) for m, g in gaps.items()}
+    mean = sum(factor.values()) / len(factor) if factor else 0.0
+    return [(d, v - (factor.get(d.month, mean) - mean)) for d, v in series]
+
+
+def _smooth3(series: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """Trailing 3-month mean, which the Labour Force's small matched sample needs
+    before a flow rate is ranked month by month."""
+    return [(series[i][0], sum(v for _, v in series[i - 2:i + 1]) / 3.0)
+            for i in range(2, len(series))]
+
+
+def flow_rates(flows: dict) -> dict[str, list[tuple[date, float]]]:
+    """Matched-sample transition rates, % -- seasonally adjusted, 3-month mean.
+
+    Each rate is a flow over the row total of its origin state among the
+    MATCHED destinations (employed, unemployed, NILF): the outgoing rotation
+    and the unmatched are not destinations a person moved to. The two entry
+    flows are scaled by the matched labour force instead -- the pool joined --
+    because the NILF pool carries an ageing trend of its own."""
+    if not flows:
+        return {}
+    to_any = {s: _flow_sum(flows, (s,), _MATCHED) for s in _MATCHED}
+    e_total = {d: to_any[_E[0]].get(d, 0.0) + to_any[_E[1]].get(d, 0.0)
+               for d in to_any[_E[0]]}
+    lf_now = _flow_sum(flows, _MATCHED, _E + (_U,))
+
+    def rate(num: dict, den: dict) -> list[tuple[date, float]]:
+        raw = [(d, 100.0 * num[d] / den[d]) for d in sorted(num) if den.get(d)]
+        return _smooth3(_deseasonalise(raw))
+
+    return {
+        "F_UE": rate(_flow_sum(flows, (_U,), _E), to_any[_U]),
+        "F_EU": rate(_flow_sum(flows, _E, (_U,)), e_total),
+        "F_UN": rate(_flow_sum(flows, (_U,), (_N,)), to_any[_U]),
+        "F_NU": rate(_flow_sum(flows, (_N,), (_U,)), lf_now),
+        "F_NE": rate(_flow_sum(flows, (_N,), _E), lf_now),
+    }
+
+
+def _quarter_fill(series: list[tuple[date, float]], months: int = 2) -> list[tuple[date, float]]:
+    """A quarterly reading carried across the two months after it, until the
+    next one: a monthly tally reads a quarterly survey as standing for its
+    quarter, not as three months of which two did not report."""
+    out: list[tuple[date, float]] = []
+    for i, (d, v) in enumerate(series):
+        nxt = series[i + 1][0] if i + 1 < len(series) else None
+        out.append((d, v))
+        for k in range(1, months + 1):
+            y, m = divmod(d.year * 12 + d.month - 1 + k, 12)
+            fill = date(y, m + 1, 1)
+            if nxt is not None and fill >= nxt:
+                break
+            out.append((fill, v))
+    return out
+
+
+#: The quarterly rows of the labour dashboard.
+QUARTERLY_LABOUR = ("VAC", "VAC_LF", "WPI", "SWITCH")
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the labour dashboard series…")
+def fetch_labor_series() -> dict[str, list[tuple[date, float]]]:
+    """Every series `core.labor` ranks, keyed as its indicators name them, each
+    dated on the first of its reference month. Missing sources leave their keys
+    out; the dashboard ranks whatever loaded."""
+    h5, h3, h4 = rba_table("h5"), rba_table("h3"), rba_table("h4")
+    out: dict[str, list[tuple[date, float]]] = {
+        "UR": _by_month(h5.get("GLFSURSA")),
+        "PR": _by_month(h5.get("GLFSPRSA")),
+        "EPOP": _by_month(h5.get("GLFSEPTPOP")),
+        "EMP": _by_month(h5.get("GLFSEPTSA")),
+        "FT": _by_month(h5.get("GLFSEPFSA")),
+        "HOURS": _by_month(h5.get("GLFMHW")),
+        "UNEMP": _by_month(h5.get("GLFSUPSA")),
+        "LF": _by_month(h5.get("GLFSLFSA")),
+        "VAC": _by_month(h5.get("GLFOSVT")),
+        "VAC_LF": _by_month(h5.get("GLFOSVTLF")),
+        "NAB_COND": _by_month(h3.get("GICNBC")),
+        "SENT": _by_month(h3.get("GICWMICS")),
+        "WPI": _by_month(h4.get("GWPIYP")),
+        "NAB_CAP": _by_month(manual_series(NAB_CAPACITY)),
+    }
+    try:
+        lab = abs_series()
+        out["UND"] = _by_month(lab.get("underemployment"))
+        out["UTIL"] = _by_month(lab.get("underutilisation"))
+        out["YOUTH"] = _by_month(lab.get("youth"))
+        out["MTU"] = _by_month(lab.get("medium_term"))
+    except Exception:
+        pass
+    try:
+        fl = flow_series()
+        out["SWITCH"] = _by_month(fl.get("switching"))
+    except Exception:
+        pass
+    out.update(flow_rates(gross_flows()))
+    # Filled no further than the newest Labour Force month: a quarterly reading
+    # stands for its quarter, never for months no survey has reached.
+    cap = out["UR"][-1][0] if out.get("UR") else None
+    for k in QUARTERLY_LABOUR:
+        if out.get(k):
+            out[k] = [(d, v) for d, v in _quarter_fill(out[k]) if cap is None or d <= cap
+                      or d in {x for x, _ in out[k]}]
+    return {k: v for k, v in out.items() if v}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_jobs_panel() -> dict[str, list[tuple[date, float]]]:
+    """Filled jobs by ANZSIC division and in total, quarterly, seasonally
+    adjusted (ABS Labour Account, item M12)."""
+    raw = abs_sdmx.panel("LABOUR_ACCT_Q,1.1", "M12.AUS..20.Q", ("LABOURACCT_IND",),
+                         start="2000")
+    return {k: [(o.date, o.value) for o in v] for k, v in raw.items()
+            if len(k) == 1 or k == "TOTAL"}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_wpi_panel() -> dict[str, list[tuple[date, float]]]:
+    """Wage Price Index (total hourly rates excluding bonuses), year-ended %, by
+    sector and industry, keyed "SECTOR|INDUSTRY" (7 all, 1 private, 2 public)."""
+    raw = abs_sdmx.panel("WPI,1.2.0", "3.THRPEB...10.AUS.Q", ("SECTOR", "INDUSTRY"),
+                         start="2012")
+    return {k: [(o.date, o.value) for o in v] for k, v in raw.items()}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def au_recessions() -> list[tuple[date, float]]:
+    """1.0 for each month inside a technical recession -- two or more
+    consecutive quarters of falling real GDP (RBA H1) -- else 0.0, monthly.
+
+    Australia has no NBER. The two-quarter rule is the convention the ABS
+    commentary and the press use, and computing it from the published GDP
+    keeps the shading reproducible rather than a list typed by hand: it marks
+    1982-83, 1990-91 and 2020."""
+    gdp = sorted((_month(d), v) for d, v in rba_table("h1").get("GGDPCVGDP", []))
+    if len(gdp) < 3:
+        return []
+    falling = [(d, v < p) for (_, p), (d, v) in zip(gdp, gdp[1:])]
+    marked: set[int] = set()
+    run: list[int] = []
+    for i, (_, down) in enumerate(falling + [(None, False)]):
+        if down:
+            run.append(i)
+            continue
+        if len(run) >= 2:
+            marked.update(run)
+        run = []
+    out: list[tuple[date, float]] = []
+    for i, (d, _) in enumerate(falling):
+        for k in range(3):                     # the quarter's three months
+            y, m = divmod(d.year * 12 + d.month - 1 - 2 + k, 12)
+            out.append((date(y, m + 1, 1), 1.0 if i in marked else 0.0))
+    return out
+
+
+def flow_transition_rates(flows: dict) -> dict[str, list[tuple[date, float]]]:
+    """Monthly transition rates by origin (fractions), matched sample, stable
+    seasonals removed -- the inputs `core.labor_flows` multiplies by stocks."""
+    if not flows:
+        return {}
+    to_any = {s: _flow_sum(flows, (s,), _MATCHED) for s in _MATCHED}
+    e_total = {d: to_any[_E[0]].get(d, 0.0) + to_any[_E[1]].get(d, 0.0)
+               for d in to_any[_E[0]]}
+
+    def rate(num: dict, den: dict) -> list[tuple[date, float]]:
+        return _deseasonalise([(d, num[d] / den[d]) for d in sorted(num) if den.get(d)])
+
+    return {"UE": rate(_flow_sum(flows, (_U,), _E), to_any[_U]),
+            "EU": rate(_flow_sum(flows, _E, (_U,)), e_total),
+            "UN": rate(_flow_sum(flows, (_U,), (_N,)), to_any[_U]),
+            "NU": rate(_flow_sum(flows, (_N,), (_U,)), to_any[_N])}
+
+
+def decomposition_stocks() -> dict[str, list[tuple[date, float]]]:
+    """Seasonally adjusted labour force, unemployed, employed and not in the
+    labour force ('000, RBA H5), the last derived from the participation rate."""
+    h5 = rba_table("h5")
+    lf, pr = dict(_by_month(h5.get("GLFSLFSA"))), dict(_by_month(h5.get("GLFSPRSA")))
+    return {"L": sorted(lf.items()), "U": _by_month(h5.get("GLFSUPSA")),
+            "E": _by_month(h5.get("GLFSEPTSA")),
+            "N": [(d, lf[d] * (100.0 / pr[d] - 1.0)) for d in sorted(lf) if pr.get(d)]}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_labour_grid() -> dict[str, list[tuple[date, float]]]:
+    """The six labour-market charts' series: unemployment, participation and
+    emp-pop (RBA H5); the jobs-workers gap; job loss and job switching; the
+    monthly employment change and its 3-month mean; and the recession bands."""
+    h5 = rba_table("h5")
+    emp, lf, vac = (dict(_by_month(h5.get(c))) for c in ("GLFSEPTSA", "GLFSLFSA", "GLFOSVT"))
+    gap = [(d, 100.0 * (emp[d] + vac[d] - lf[d]) / lf[d]) for d in sorted(vac)
+           if d in emp and lf.get(d)]
+    emp_s = sorted(emp.items())
+    change = [(d, v - p) for (_, p), (d, v) in zip(emp_s, emp_s[1:])]
+    ma3 = [(change[i][0], sum(v for _, v in change[i - 2:i + 1]) / 3.0)
+           for i in range(2, len(change))]
+    rates = flow_rates(gross_flows())
+    out = {"UR": _by_month(h5.get("GLFSURSA")), "PR": _by_month(h5.get("GLFSPRSA")),
+           "EPOP": _by_month(h5.get("GLFSEPTPOP")), "JWGAP": gap,
+           "JOB_LOSS": rates.get("F_EU", []), "EMP_CHANGE": change, "EMP_CHANGE_3MA": ma3,
+           "RECESSION": au_recessions()}
+    try:
+        out["SWITCHING"] = _by_month(flow_series().get("switching"))
+    except Exception:
+        out["SWITCHING"] = []
+    return out
+
+
 def manual_series(name: str) -> list[tuple[date, float]]:
     """A manual series off disk, for the sources with no public feed."""
     try:

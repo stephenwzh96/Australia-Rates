@@ -61,7 +61,9 @@ def render(ctx: Ctx, root: Path) -> None:
             _size(M, P)
             _watch(ctx, P)
         for w in M.warnings:
-            st.warning(w)
+            # Escaped: Streamlit reads a pair of "$" as inline LaTeX, which set
+            # "A$24.66 to A$22.19" as maths with the words run together.
+            st.warning(w.replace("$", r"\$"))
 
     if M.priced:
         md = report.render(M)

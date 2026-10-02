@@ -1,6 +1,7 @@
-"""Labour: the full-employment panel and its slack heatmap, diffusion, the
-labour-market charts, the unemployment-rate decomposition, employment and
-wages -- the US Labour tab's layout, in Australian series."""
+"""Labour: the overall slack indicator and its heatmap, diffusion and its
+channels, the labour-market charts, the unemployment-rate decomposition,
+employment by component and wages -- the US Labour tab's layout in Australian
+series -- then the RBA-framed full-employment panel, capacity and flows."""
 
 from __future__ import annotations
 
@@ -44,26 +45,22 @@ def _compare_date(choice: str, anchor: date) -> date:
 
 
 def render(ctx: Ctx) -> None:
-    data = {k: (src.capped(v, ctx.as_of) if not k.startswith("_") else v)
-            for k, v in src.abs_series().items()}
-    _full_employment(ctx, data)
-
     from ui import labour_panels
-    labour_panels.slack_and_diffusion(ctx)
-
-    st.divider()
-    head, ctl = st.columns([2, 1.2], vertical_alignment="bottom")
-    with head:
-        C.section("Recent history", "capacity, flows, the labour-market charts and employment")
-    with ctl:
-        hist = C.history_window("hist_window_labour", default="10Y",
-                                help="Scopes the charts below. The full-employment panel "
-                                     "always scores against its full window.")
-    start = C.window_start(hist, ctx.as_of)
-    _capacity_and_flows(ctx, data, start)
+    start = labour_panels.slack_and_diffusion(ctx)
+    if start is None and not st.session_state.get("hist_window_labour"):
+        start = C.window_start("10Y", ctx.as_of)
     labour_panels.labour_market(ctx, start)
     labour_panels.decomposition(ctx)
     labour_panels.employment_and_wages(ctx, start)
+
+    # The Australian read the US tab has no twin for: the RBA-framed full-
+    # employment panel, capacity against unemployment, and the job flows
+    # against wages. Kept, after the US layout, on the same history window.
+    st.divider()
+    data = {k: (src.capped(v, ctx.as_of) if not k.startswith("_") else v)
+            for k, v in src.abs_series().items()}
+    _full_employment(ctx, data)
+    _capacity_and_flows(ctx, data, start)
 
 
 def _full_employment(ctx: Ctx, data: dict) -> None:

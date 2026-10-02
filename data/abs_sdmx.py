@@ -126,6 +126,75 @@ def series(indicator_key: str) -> list[Observation]:
     )
 
 
+def _fetch_panel(flow: str, key: str, dims: tuple[str, ...],
+                 start: str) -> dict[str, list[Observation]] | None:
+    """Every series a partially pinned key matches, keyed by the values of
+    `dims` joined with "|". None on any failure, so the caller keeps its cache."""
+    try:
+        r = requests.get(BASE.format(flow=flow, key=key),
+                         params={"format": "csvfile", "startPeriod": start},
+                         headers=HEADERS, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        rows = list(csv.DictReader(io.StringIO(r.text)))
+    except requests.RequestException:
+        return None
+    out: dict[str, dict[date, float]] = {}
+    for row in rows:
+        d = _parse_period(row.get("TIME_PERIOD", ""))
+        raw = (row.get("OBS_VALUE") or "").strip()
+        if d is None or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        out.setdefault("|".join(row.get(x, "") for x in dims), {})[d] = value
+    return {k: [Observation(d, v) for d, v in sorted(s.items())] for k, s in out.items()}
+
+
+def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
+          max_age_days: int = 1) -> dict[str, list[Observation]]:
+    """A whole SDMX panel -- e.g. filled jobs by industry, WPI by industry --
+    keyed by the `dims` values, cached on disk as one snapshot and refetched
+    whole once it is `max_age_days` old. Whole, not windowed: these are revised
+    statistics, and a windowed merge would splice two vintages. A failed fetch
+    serves the last good snapshot; nothing raises."""
+    ckey = f"abs-sdmx-panel-{flow}-{key}-{'-'.join(dims)}"
+    cached = cache.read_json(ckey)
+    stamp = next((r.get("fetched") for r in cached if "fetched" in r), None)
+    fresh = False
+    if stamp:
+        try:
+            age = (datetime.now(timezone.utc).date() - date.fromisoformat(stamp)).days
+            fresh = age < max_age_days
+        except ValueError:
+            fresh = False
+
+    def unpack(rows: list[dict]) -> dict[str, list[Observation]]:
+        out: dict[str, list[Observation]] = {}
+        for r in rows:
+            if "k" not in r:
+                continue
+            try:
+                out.setdefault(r["k"], []).append(Observation(date.fromisoformat(r["d"]),
+                                                              float(r["v"])))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return {k: sorted(v, key=lambda o: o.date) for k, v in out.items()}
+
+    if fresh:
+        return unpack(cached)
+    got = _fetch_panel(flow, key, dims, start)
+    if got is None:
+        return unpack(cached)
+    rows = [{"fetched": datetime.now(timezone.utc).date().isoformat()}]
+    rows += [{"k": k, "d": o.date.isoformat(), "v": o.value} for k, obs in got.items()
+             for o in obs]
+    cache.write_json(ckey, rows)
+    return got
+
+
 def series_pairs(indicator_key: str) -> list[tuple[date, float]]:
     return [(o.date, o.value) for o in series(indicator_key)]
 
