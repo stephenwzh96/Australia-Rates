@@ -21,8 +21,8 @@ from state import store
 from ui import components as C
 from ui import sidebar, verdict
 from ui.context import Ctx, Market
-from ui.tabs import (curve, data, growth, inflation, labour, macro, path, releases, sizing,
-                     smp, votes)
+from ui.tabs import (analysis, curve, data, growth, inflation, labour, macro, path, releases,
+                     sizing, smp, votes)
 from ui.theme import active as active_palette
 
 st.set_page_config(page_title="RBA event pricing", page_icon="◷", layout="wide")
@@ -39,6 +39,7 @@ SECTIONS = {
     "Labour": labour.render,
     "Inflation": inflation.render,
     "Growth": growth.render,
+    "Analysis": analysis.render,
     "Data": data.render,
 }
 #: History windows reset to their default whenever the reader navigates into
