@@ -53,10 +53,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 from typing import Sequence
 
 from . import contracts as _contracts
+from .rba_calendar import Meeting
 from .pricing import (Side, expected_value, kelly_fraction, max_gain, max_loss,
                       net_odds)
 
@@ -205,6 +206,57 @@ def dv01_for(key: str, custom: float | None = None,
         return _contracts.ir_dv01(yield_pct if yield_pct is not None
                                   else IR_REFERENCE_YIELD)
     return IB_DV01
+
+
+def _window(contract: Contract) -> tuple[date, date] | None:
+    """`[start, end)` of the span a contract settles on, or None if it has none.
+
+    IB: the delivery month, whose daily cash rates it averages. IR: the 90 days
+    of the bill delivered at its fix -- 3-month BBSW on that morning is the
+    market's cash rate over exactly those days, plus credit."""
+    if contract.month is None or contract.kind not in ("ib", "ir"):
+        return None
+    if contract.kind == "ib":
+        return contract.month, _contracts.add_month(contract.month)
+    start = _contracts.ir_settlement_day(contract.month)
+    return start, start + timedelta(days=_contracts.IR_TENOR_DAYS)
+
+
+def contract_meeting(contract: Contract, meetings: Sequence[Meeting]) -> Meeting | None:
+    """The RBA meeting a contract's price is actually a read on.
+
+    The meeting whose new rate governs the largest share of the contract's span,
+    provided that share clears the strip's own capture threshold; otherwise the
+    last meeting already in force when the span opens -- the US rule, on the
+    IB month and the IR bill's 90 days."""
+    from .strip import CAPTURE_THRESHOLD
+
+    window = _window(contract)
+    if window is None:
+        return None
+    start, end = window
+    span = (end - start).days
+    events = sorted(((_contracts.effective_date(m.end), m) for m in meetings),
+                    key=lambda t: t[0])
+    inside = [(eff, m) for eff, m in events if start <= eff < end]
+    bounds = [eff for eff, _ in inside] + [end]
+    governed = [(bounds[i + 1] - bounds[i]).days for i in range(len(inside))]
+    carries = [(days, m) for days, (_, m) in zip(governed, inside)
+               if span and days / span >= CAPTURE_THRESHOLD]
+    if carries:
+        return max(carries, key=lambda t: t[0])[1]
+    return next((m for eff, m in reversed(events) if eff <= start), None)
+
+
+def contract_for_meeting(meeting: Meeting, meetings: Sequence[Meeting], anchor: date,
+                         kind: str = "ib") -> Contract | None:
+    """The nearest contract of `kind` whose price reads on `meeting` -- what a
+    freshly opened meeting sizes in, rather than whatever the meeting it was
+    cloned from was sized in."""
+    for c in contract_universe(anchor):
+        if c.kind == kind and contract_meeting(c, meetings) == meeting:
+            return c
+    return None
 
 
 def fraction_label(multiple: float) -> str:

@@ -24,8 +24,10 @@ def _or(value, default):
 PER_MEETING_WIDGET_KEYS = ("smp_read_editor",)
 
 
-def _switch_meeting(key: str) -> None:
+def _switch_meeting(key: str, pending_contract: str | None = None) -> None:
     st.session_state["key"] = key
+    if pending_contract:
+        st.session_state["_pending_contract"] = pending_contract
     st.session_state.pop("state", None)
     st.session_state["dirty"] = False
     for k in PER_MEETING_WIDGET_KEYS:
@@ -43,7 +45,7 @@ def render(meetings: list[rba_calendar.Meeting], today: date) -> tuple[str, dict
         key, S = _meeting(meetings, today)
         as_of = _as_of(S, today)
         t = _trade(S)
-        _sizing(S, t, as_of)
+        _sizing(S, t, key, meetings, as_of)
         _view(S)
         st.divider()
         _save(key, S)
@@ -74,6 +76,18 @@ def _meeting(meetings, today: date) -> tuple[str, dict]:
     if "state" not in st.session_state:
         st.session_state["state"] = store.load_or_seed(
             key, [rba_calendar.meeting_to_dict(m) for m in meetings], today)
+        sz = st.session_state["state"].setdefault("sizing", {})
+        pending = st.session_state.pop("_pending_contract", None)
+        if pending:
+            sz["contract"] = pending
+        elif key not in saved_keys:
+            # A new meeting sizes in its own contract, not in whatever the
+            # meeting it was cloned from was sized in -- that one usually
+            # captures none of this decision.
+            mine = next((m for m in meetings if m.key == key), None)
+            own = sizing.contract_for_meeting(mine, meetings, today) if mine else None
+            if own is not None:
+                sz["contract"] = own.key
         # Every meeting opens on today, saved or not: a saved meeting is a live
         # analysis you keep reopening, and the as-of scopes every tab, so
         # restoring a stale one would silently reprice the page days back.
@@ -139,7 +153,7 @@ def _trade(S: dict) -> dict:
     return t
 
 
-def _sizing(S: dict, t: dict, as_of: date) -> None:
+def _sizing(S: dict, t: dict, key: str, meetings, as_of: date) -> None:
     C.sub("Sizing")
     sz = S.setdefault("sizing", {})
     z1, z2 = st.columns(2)
@@ -173,7 +187,13 @@ def _sizing(S: dict, t: dict, as_of: date) -> None:
             "Contract", keys, index=keys.index(prior), format_func=lambda k: by_key[k].label,
             on_change=mark_dirty,
             help="Sets the DV01: IB A$24.66/bp; IR moves with the yield because a bank bill "
-                 "is discount-priced.")
+                 "is discount-priced. Picking one jumps the meeting to whichever decision "
+                 "mostly sets its settlement.")
+    if sz["contract"] != prior:
+        target = sizing.contract_meeting(by_key[sz["contract"]], meetings)
+        if target is not None and target.key != key:
+            _switch_meeting(target.key, sz["contract"])
+            st.rerun()
     with z4:
         sz["bets_per_year"] = st.number_input(
             "Bets/yr", value=int(sz.get("bets_per_year") or sizing.DEFAULT_BETS_PER_YEAR),
