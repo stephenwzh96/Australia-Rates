@@ -870,3 +870,17 @@ def fetch_smp_rounds(as_of: date, released: tuple) -> list:
 
 
 register_refresh(fetch_smp_rounds.clear)
+
+
+# ------------------------------------------------------- ASX settlements kept
+
+def contract_settlements(kind: str, symbol: str) -> list[tuple[date, float]]:
+    """One contract's daily settlements as the app has filed them (not cached:
+    the file is local, small, and grows while the app runs)."""
+    from data import asx_snapshots
+    return asx_snapshots.history(kind, symbol)
+
+
+def settlement_coverage(kind: str) -> tuple[date | None, int]:
+    from data import asx_snapshots
+    return asx_snapshots.coverage(kind)

@@ -4,6 +4,8 @@ __pycache__/
 venv/
 .env
 data/cache/
+# Accrued ASX settlements: local history the exchange does not publish.
+data/snapshots/
 runs/
 .pytest_cache/
 .DS_Store

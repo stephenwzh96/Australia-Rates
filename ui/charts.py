@@ -569,6 +569,60 @@ def priced_path(steps, spot: float, p: Palette, height: int = 240) -> alt.LayerC
     return _apply(alt.layer(*layers), p, height)
 
 
+def contract_history_chart(history: list[tuple[date, float]], code: str,
+                           p: Palette,
+                           moves_bp: list[tuple[date, float]] | None = None,
+                           implied: bool = False,
+                           height: int = 220) -> alt.LayerChart:
+    """Daily settlement history for one ASX contract, from the snapshots the
+    app accrues (`data.asx_snapshots`) -- the US chart, fed by our own marks
+    because the exchange publishes none."""
+    df = pd.DataFrame(history, columns=["date", "price"]).dropna()
+    df["rate"] = 100.0 - df["price"]
+    show_moves = bool(moves_bp)
+    if show_moves:
+        df["moves"] = df["date"].map(dict(moves_bp))
+        df = df.dropna(subset=["moves"])
+    xfmt, xticks = _gs_time_format(list(df["date"]))
+
+    tooltip = [alt.Tooltip("date:T", title="Date", format="%d %b %Y")]
+    if show_moves:
+        tooltip.append(alt.Tooltip("moves:Q", title="Priced (bp)", format="+.1f"))
+    tooltip += [alt.Tooltip("rate:Q", title="Implied %", format=".3f"),
+                alt.Tooltip("price:Q", title="Price", format=".4f")]
+
+    line = (
+        alt.Chart(df)
+        .mark_line(strokeWidth=LINE_WIDTH, interpolate="monotone", color=p.positive)
+        .encode(
+            x=alt.X("date:T", axis=alt.Axis(title=None, format=xfmt,
+                                            tickCount=xticks, labelColor=p.muted,
+                                            gridColor=p.grid)),
+            y=alt.Y("moves:Q" if show_moves else "price:Q",
+                    axis=alt.Axis(title="Policy move priced (bp)" if show_moves
+                                        else "Price",
+                                  format="+.0f" if show_moves else alt.Undefined,
+                                  titleColor=p.muted, labelColor=p.muted,
+                                  gridColor=p.grid),
+                    scale=alt.Scale(nice=True, padding=0.05, zero=False)),
+            tooltip=tooltip,
+        )
+    )
+    layers = [line]
+    if show_moves and not df.empty:
+        lo, hi = float(df["moves"].min()), float(df["moves"].max())
+        if lo <= 0 <= hi:
+            layers.insert(0, alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+                color=p.baseline, strokeWidth=1, strokeDash=[4, 3]).encode(y="y:Q"))
+
+    tail = ("move priced vs the cash rate target (bp)" if show_moves
+            else "daily settlement")
+    return _apply(
+        alt.layer(*layers).properties(
+            title=vintage_title(f"{code} — {tail}", None, p, limit=0)),
+        p, height)
+
+
 def instrument_history(history: list[tuple[date, float]],
                        curve: list[tuple[date, float]],
                        p: Palette, start: date | None = None,

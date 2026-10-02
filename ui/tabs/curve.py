@@ -380,6 +380,51 @@ def _history_panel(ctx: Ctx) -> None:
            "a settlement; IR's fix is a single day, so 100 − 3-month BBSW on any date is what "
            "that contract would settle at if that were its last trading day. Neither line "
            "carries the term premium a real futures quote would.")
+    _contract_history(ctx)
+
+
+def _contract_history(ctx: Ctx) -> None:
+    """One contract's own daily settlements, from the marks the app keeps --
+    the US panel's trailing contract history, accrued because ASX publishes
+    none."""
+    P, mk = ctx.P, ctx.market
+    quotes = [q for q in mk.ib_live + mk.ir_live if q.ok]
+    C.sub("Contract history", "daily settlements kept by this app")
+    if not quotes:
+        C.note("No contract is quoting, so there is no history to pick from.")
+        return
+    with C.bar("contract_history"):
+        c1, c2, _ = st.columns([1, 1.1, 2.4], vertical_alignment="bottom")
+    with c1:
+        pick = st.selectbox("Contract", [q.code for q in quotes], key="contract_hist_pick",
+                            width=130)
+    q = next(x for x in quotes if x.code == pick)
+    with c2:
+        mode = C.choice("Show", ("Price", "Move bp"), default="Price", key="contract_hist_mode",
+                        disabled=q.kind != "ib",
+                        help="Move bp: the contract's implied rate less the cash rate target "
+                             "on each day — the move it priced (IB only).")
+    hist = src.capped(src.contract_settlements(q.kind, q.symbol), ctx.as_of)
+    first, days = src.settlement_coverage(q.kind)
+    if len(hist) < 2:
+        C.note(f"Accruing: {days} settlement day{'' if days == 1 else 's'} kept"
+               + (f" since {first:%d %b %Y}" if first else "")
+               + f", {len(hist)} for {q.code}. ASX publishes no contract history, so each "
+                 "day the app is opened files that day's settlements; the chart draws from "
+                 "the second day.")
+        return
+    moves = None
+    if mode == "Move bp" and q.kind == "ib":
+        target = sorted(src.cash_target_history())
+        moves = []
+        for d, price in hist:
+            on = [v for t, v in target if t <= d]
+            if on:
+                moves.append((d, (100.0 - price - on[-1]) * 100.0))
+    st.altair_chart(charts.contract_history_chart(hist, q.code, P, moves_bp=moves),
+                    width="stretch", theme=None)
+    C.note(f"{len(hist)} settlements for {q.code}, {hist[0][0]:%d %b} to {hist[-1][0]:%d %b %Y}. "
+           "Only true daily settlements are kept — never a midpoint or a stale last trade.")
 
 
 def _spread_matrix(ctx: Ctx, view: str) -> None:

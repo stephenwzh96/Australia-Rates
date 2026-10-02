@@ -58,7 +58,7 @@ import requests
 
 from core.contracts import MONTH_CODES, ib_contract_code, ir_contract_code
 
-from . import cache
+from . import asx_snapshots, cache
 from .common import Observation
 
 BASE = ("https://asx.api.markitdigital.com/asx-research/1.0/"
@@ -277,6 +277,7 @@ def fetch_strip_cached(kind: str = "ib") -> list[Quote]:
     quotes = fetch_strip(kind)
     if quotes:
         cache.write_json(f"asx-{kind}-strip", [_to_dict(q) for q in quotes])
+        asx_snapshots.record(kind, quotes)
         return quotes
     rows = cache.read_json(f"asx-{kind}-strip")
     return [_from_dict(r, kind) for r in rows] if rows else []
