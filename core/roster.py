@@ -98,40 +98,63 @@ def backfill_participants(rows: list[dict], reference: list[dict]) -> tuple[list
     return (rows + missing, True) if missing else (rows, False)
 
 
+_HONOURS = {"ac", "ao", "am", "oam", "psm", "dr", "prof", "professor", "the", "hon"}
+
+
+def name_key(name: str) -> str:
+    """A name as a matching key: accents, case, punctuation and honours
+    dropped, so "Renee Fry-McKibbin AO" is the RBA's "Renée Fry-McKibbin"."""
+    import unicodedata
+
+    plain = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    words = "".join(c if c.isalnum() else " " for c in plain.lower()).split()
+    return " ".join(w for w in words if w not in _HONOURS)
+
+
 def seat_board(rows: list[dict], board) -> tuple[list[dict], list[str], list[str]]:
     """Bring the roster in line with the Board as rba.gov.au lists it.
 
     `board` is the published membership (`data.rba_board.Member`s, in seat
-    order). A member not yet on the roster takes the first blank seat of their
-    role -- keeping whatever score and note that seat already carries -- or is
-    added as a new neutral row; a named row no longer on the Board is dropped,
-    and so are blank seats once every member is placed, so the tally always
-    counts the nine who actually vote. An empty `board` (the page could not be
-    read) leaves the roster alone. Returns (rows, joined, left)."""
+    order). A row whose name matches a member (`name_key`: accents, case and
+    honours ignored) keeps its scores and takes the official spelling. A
+    member not yet on the roster takes the first blank seat of their role --
+    keeping whatever score and note that seat carries -- or is added as a new
+    neutral row. A named row matching no member has left the Board and is
+    dropped, and so are blank seats once every member is placed, so the tally
+    counts the nine who actually vote. An empty `board` (the page could not
+    be read) leaves the roster alone. Returns (rows, joined, left)."""
     board = list(board or ())
     if not board:
         return rows, [], []
     rows = [dict(r) for r in rows]
-    on_board = {m.name for m in board}
-    named = {str(r.get("name") or "").strip() for r in rows}
-    left = [n for n in named if n and n not in on_board]
+    by_key = {name_key(m.name): m for m in board}
+    placed: dict[str, dict] = {}
+    left: list[str] = []
+    for r in rows:
+        name = str(r.get("name") or "").strip()
+        if not name:
+            continue
+        m = by_key.get(name_key(name))
+        if m is None or m.name in placed:
+            left.append(name)
+            continue
+        r["name"] = m.name
+        placed[m.name] = r
     joined: list[str] = []
     for m in board:
-        if m.name in named:
+        if m.name in placed:
             continue
         seat = next((r for r in rows if not str(r.get("name") or "").strip()
-                     and r.get("role") == m.role), None)
+                     and r.get("role") == m.role
+                     and all(r is not p for p in placed.values())), None)
         if seat is None:
             seat = {"name": "", "role": m.role, "bloc1": m.bloc, "bloc2": m.bloc,
                     "score1": 2.5, "score2": 2.5, "is_mover": False,
                     "note": "Score not set -- derive from the member's own speeches."}
-            rows.append(seat)
         seat["name"] = m.name
+        placed[m.name] = seat
         joined.append(m.name)
-    keep = [r for r in rows if str(r.get("name") or "").strip() in on_board]
-    order = {m.name: i for i, m in enumerate(board)}
-    keep.sort(key=lambda r: order[str(r.get("name")).strip()])
-    return normalize_roster(keep), joined, left
+    return normalize_roster([placed[m.name] for m in board]), joined, left
 
 
 def score_trend(r: dict) -> str:

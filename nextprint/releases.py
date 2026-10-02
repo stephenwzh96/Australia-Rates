@@ -9,7 +9,9 @@ R_m itself is exact from the ABS release pages (every release from December
 that a rule dates it on the SECOND Thursday of the following month -- the
 earliest the release has come -- so the cutoff can only be too early, which
 costs an input a month and never leaks one. Every input rule errs the other
-way, LATE: a date too late can only understate an input.
+way, LATE -- an earlier Labour Force print used as an input included (the
+28th of the following month) -- and so does the test of whether a print is
+out by the as-of date: a date too late can only understate what was known.
 
 Pure: no I/O, no clock.
 """
@@ -50,7 +52,22 @@ def lf_rule(m: date) -> date:
 
 
 def lf_release(m: date, exact: dict[date, date]) -> date:
+    """The day the forecast for m is made: exact, else the EARLY rule, so the
+    cutoff can only cost an input, never admit one."""
     return exact.get(month_start(m)) or lf_rule(m)
+
+
+def lf_rule_late(m: date) -> date:
+    """The 28th of the following month: later than any release has come
+    (the 11th to the 25th). Used wherever an early date would leak -- an
+    earlier print read as an input, or a print counted as out by an as-of."""
+    nxt = add_months(m, 1)
+    return date(nxt.year, nxt.month, 28)
+
+
+def lf_published(m: date, exact: dict[date, date]) -> date:
+    """When month m's Labour Force data was certainly public."""
+    return exact.get(month_start(m)) or lf_rule_late(m)
 
 
 def nab_release(m: date) -> date:
@@ -75,7 +92,7 @@ def vacancies_release(m: date) -> date:
 
 #: How each timing class is dated, in words for the tab's timing table.
 RULE_TEXT = {
-    I.LABOUR_FORCE: "earlier Labour Force release (exact from Dec 2019)",
+    I.LABOUR_FORCE: "earlier Labour Force release (exact from Dec 2019, else the 28th)",
     I.NAB: "21st of the next month (published ~2nd Tuesday)",
     I.WESTPAC_MI: "end of the survey month (published ~2nd Wednesday)",
     I.VACANCIES: "end of the 2nd month after (published ~5 weeks after)",
@@ -84,7 +101,7 @@ RULE_TEXT = {
 
 def rule_for(timing: str, exact_lf: dict[date, date]) -> Callable[[date], date]:
     return {
-        I.LABOUR_FORCE: lambda d: lf_release(d, exact_lf),
+        I.LABOUR_FORCE: lambda d: lf_published(d, exact_lf),
         I.NAB: nab_release,
         I.WESTPAC_MI: westpac_release,
         I.VACANCIES: vacancies_release,

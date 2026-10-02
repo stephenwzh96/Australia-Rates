@@ -51,6 +51,7 @@ import requests
 
 from . import cache
 from .common import Observation
+from core import clock
 
 BASE = "https://www.rba.gov.au/statistics/tables/csv/{table}-data.csv"
 TIMEOUT = 20
@@ -273,14 +274,14 @@ def table_cached(table: str, recheck_after: int = 1) -> dict[str, list[Observati
     code. Rechecked daily -- nothing in F1 publishes more often, and the first
     visit of the day is the "did anything print?" check.
     """
-    return _table_memo(table, date.today())
+    return _table_memo(table, clock.today())
 
 
 def _load_table(table: str) -> dict[str, list[Observation]]:
     """Fetch-or-read one table. Everything above is caching; this is the work."""
     key = f"rba-table-{table}"
     marker = cache.load(f"{key}-stamp")
-    today = date.today()
+    today = clock.today()
     fresh = marker is not None and marker.fetched_at == today
 
     if not fresh:
@@ -322,7 +323,7 @@ def fetch(code: str, years: float = 3.0) -> SeriesData:
     series = table_cached(spec.table).get(code)
     if not series:
         return _empty(code, "unavailable")
-    cutoff = date.today() - timedelta(days=int(365.25 * years))
+    cutoff = clock.today() - timedelta(days=int(365.25 * years))
     obs = [o for o in series if o.date >= cutoff]
     if not obs:
         return _empty(code, "no observations")
@@ -424,7 +425,7 @@ def realised_daily_vol_bp(code: str = BBSW_CODE, days: int = 90,
     obs = table_cached("f1").get(code, [])
     if len(obs) < 3:
         return None
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = clock.today() - timedelta(days=days)
     window = [o for o in obs if o.date >= cutoff]
     skip = exclude or set()
     diffs = [(b.value - a.value) * 100.0

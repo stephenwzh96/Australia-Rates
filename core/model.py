@@ -13,6 +13,7 @@ from typing import Any
 from . import (contracts, econ_calendar, kills, montecarlo, moves as moves_mod, path,
                pricing, rba_calendar, sizing, volatility, votes)
 from .rba_calendar import Meeting
+from . import clock
 
 
 @dataclass
@@ -177,7 +178,7 @@ def build(state: dict[str, Any],
     pth = state.get("path", {})
 
     meeting = rba_calendar.meeting_from_dict(state["meeting"])
-    when = as_of or date.fromisoformat(state.get("as_of") or date.today().isoformat())
+    when = as_of or date.fromisoformat(state.get("as_of") or clock.today().isoformat())
     meetings = all_meetings or list(rba_calendar.DEFAULT_MEETINGS)
 
     # The economic calendar is built up front, not with the rest of Part II,

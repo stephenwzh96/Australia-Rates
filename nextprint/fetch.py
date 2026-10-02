@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ LF_INDEX = ("https://www.abs.gov.au/statistics/labour/employment-and-unemploymen
             "labour-force-australia")
 CACHE = Path(__file__).resolve().parent.parent / "data" / "cache" / "nextprint_lf_releases.json"
 TIMEOUT = 30
+INDEX_TTL = 60 * 60 * 24
 
 X29_HEADERS = {
     I.UNEMPLOYED: "Unemployed total ;  Persons ;",
@@ -101,11 +103,17 @@ def _slugs() -> list[str]:
 
 def lf_release_dates(refresh: bool = False) -> dict[date, date]:
     """Reference month -> the day its Labour Force release came out, for every
-    release the ABS still has a page for. Cached for good, month by month."""
+    release the ABS still has a page for. A past release's date never changes,
+    so each is cached for good; the index is re-read once a day so a new
+    month's release joins as soon as it is out."""
     cached = _read_cache()
-    if refresh or not cached:
+    try:
+        stale = time.time() - CACHE.stat().st_mtime > INDEX_TTL
+    except OSError:
+        stale = True
+    if refresh or stale or not cached:
         missing = [s for s in _slugs() if s not in cached]
-        if missing:
+        if missing or stale:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 for slug, day in zip(missing, ex.map(_released_on, missing)):
                     if day is not None:

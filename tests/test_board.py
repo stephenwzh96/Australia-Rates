@@ -66,3 +66,13 @@ def test_clone_rolls_scores_forward():
     row = out["roster"][0]
     assert row["score1"] == 3.5 and row["bloc1"] == "Hawks" and row["score2"] == 3.5
     assert out["score_baseline"] == "2026-09-29"
+
+
+def test_seat_board_keeps_a_score_typed_without_the_accent():
+    from data.rba_board import Member
+    board = [Member("Renée Fry-McKibbin", "External member", "", "", "")]
+    rows = [{"name": "Renee Fry-McKibbin AO", "role": "External member", "score": 3.8}]
+    out, joined, left = R.seat_board(rows, board)
+    assert out[0]["name"] == "Renée Fry-McKibbin" and out[0]["score2"] == 3.8
+    assert joined == [] and left == []
+

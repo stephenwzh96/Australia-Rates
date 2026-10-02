@@ -84,3 +84,12 @@ def test_hac_test_matches_a_plain_t_without_autocorrelation():
 
 def test_published_rounding_is_half_up():
     assert P.round_rate(4.65) == 4.7 and P.round_rate(4.6499) == 4.6
+
+
+def test_a_print_is_not_out_before_its_late_date_without_an_exact_one():
+    """Pre-2019 replay: the Feb 2018 print counts as out only from the 28th of
+    March, never from the early rule's 8th."""
+    data = _data()
+    as_of = date(2018, 3, 12)
+    p = P.build(data, as_of)
+    assert p.live_month == date(2018, 2, 1)

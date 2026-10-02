@@ -67,8 +67,7 @@ def _result(as_of: date):
     from nextprint import fetch, pipeline
 
     cache = _results()
-    with st.spinner("Reading the Labour Force and the surveys…"):
-        data = fetch.load_all()
+    data = src.fetch_nextprint_data()
     key = (as_of, fetch.fingerprint(data))
     built_at, res = cache.get(key, (0.0, None))
     if res is None or time.monotonic() - built_at > RESULT_TTL:
@@ -616,5 +615,6 @@ def _method(res) -> None:
             from nextprint import fetch
 
             fetch.clear()
+            src.fetch_nextprint_data.clear()
             _results().clear()
             st.rerun()

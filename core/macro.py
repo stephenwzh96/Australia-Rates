@@ -274,8 +274,14 @@ def _is_quarterly(rows: list[tuple[date, float]]) -> bool:
 
 
 def _ma3(rows: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """3-point average over CONSECUTIVE calendar months only: a gap (the
+    Oct-2025 CPI hole, the 2019 credit changeover) ends the window rather than
+    letting it reach across. Keyed on months, never on row position."""
     out: list[tuple[date, float]] = []
     for i in range(2, len(rows)):
+        a, c = rows[i - 2][0], rows[i][0]
+        if (c.year - a.year) * 12 + c.month - a.month != 2:
+            continue
         out.append((rows[i][0], statistics.fmean(v for _, v in rows[i - 2:i + 1])))
     return out
 

@@ -6,10 +6,10 @@ Verdict -- so every meeting produces the artifact you already work from.
 
 from __future__ import annotations
 
-from datetime import datetime
 
 from core import contracts, sizing
 from core.model import Model
+from core import clock
 
 MOVE = {"hike": "hike", "cut": "cut"}
 
@@ -346,6 +346,6 @@ def render(m: Model) -> str:
         L.append("")
 
     L += ["", "---", "",
-          f"*Generated {datetime.now():%Y-%m-%d %H:%M} from the RBA event-pricing "
+          f"*Generated {clock.now():%Y-%m-%d %H:%M} from the RBA event-pricing "
           "dashboard.*", ""]
     return "\n".join(L)

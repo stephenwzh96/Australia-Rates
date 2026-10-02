@@ -40,6 +40,7 @@ from __future__ import annotations
 import datetime as _dt
 import io
 import re
+import time
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
@@ -603,8 +604,14 @@ NEW_HOME_LOANS = ("Households ;  Housing Finance ;  Total dwellings excluding re
                   "New loan commitments ;  Value ;")
 
 
-@lru_cache(maxsize=16)
 def _release_href(landing: str, fname: str) -> str | None:
+    """`_release_href_at` bucketed into six-hour windows, so a long-running
+    server picks up a new release the same day it is published."""
+    return _release_href_at(landing, fname, int(time.time() // (6 * 3600)))
+
+
+@lru_cache(maxsize=16)
+def _release_href_at(landing: str, fname: str, _window: int) -> str | None:
     """The current file's full URL as the landing page links it. Read rather
     than built: a release's slug is a month (`aug-2026`) for some and a
     quarter (`jun-quarter-2026`) for others, and Lending Indicators moved

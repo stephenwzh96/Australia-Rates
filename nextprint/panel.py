@@ -151,9 +151,10 @@ def build(data: dict, as_of: date, next_release: date | None = None) -> Panel:
     months = sorted(rate)
     rows, index = [], []
     for month in months[1:]:
-        day = R.lf_release(month, exact)
-        if day >= as_of:
+        # Out by the as-of only on its LATE date; forecast on its EARLY one.
+        if R.lf_published(month, exact) >= as_of:
             continue
+        day = R.lf_release(month, exact)
         row, _ = row_for(month, day, True)
         row["release"], row["masked"], row["live"] = day, masked(month), False
         rows.append(row)

@@ -884,3 +884,14 @@ def contract_settlements(kind: str, symbol: str) -> list[tuple[date, float]]:
 def settlement_coverage(kind: str) -> tuple[date | None, int]:
     from data import asx_snapshots
     return asx_snapshots.coverage(kind)
+
+
+@st.cache_data(ttl=600, show_spinner="Reading the Labour Force and the surveys…")
+def fetch_nextprint_data() -> dict:
+    """Everything the next-print model reads (`nextprint.fetch.load_all`),
+    held ten minutes so a rerun of the Analysis tab does not re-parse it."""
+    from nextprint import fetch
+    return fetch.load_all()
+
+
+register_refresh(fetch_nextprint_data.clear)

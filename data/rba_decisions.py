@@ -135,6 +135,8 @@ def parse(page: str, url: str = "") -> Decision | None:
     votes: dict[str, int] = {}
     unanimous: bool | None = None
     if re.search(r"decision was unanimous", t):
+        # The statement gives no count for a unanimous vote; all nine members
+        # have sat at every Board meeting, so nine is recorded.
         unanimous, votes = True, {action: 9}
     else:
         m = re.search(r"decision was made by majority:? (.*?)(?: More on| Enquiries|$)", t)
@@ -164,9 +166,16 @@ def _get(url: str) -> str | None:
 
 
 def _links(year: int, current: bool) -> list[str]:
+    """A year's decision links. The current year's index is re-read every few
+    hours; a past year's cache is final only if it was written after that
+    year ended -- one cached mid-year would otherwise miss its last meetings
+    for good once the year rolls over."""
     path = _CACHE / f"index-{year}.json"
     try:
-        if not current or time.time() - path.stat().st_mtime < _INDEX_TTL:
+        written = path.stat().st_mtime
+        closed = datetime(year + 1, 1, 1).timestamp()
+        fresh = (time.time() - written < _INDEX_TTL) if current else written >= closed
+        if fresh:
             return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass

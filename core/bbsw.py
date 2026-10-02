@@ -70,6 +70,7 @@ from .contracts import (IR_TENOR_DAYS, effective_date, ir_last_trading_day,
                         ir_settlement_day)
 from .rba_calendar import Meeting
 from .strip import StripPath
+from . import clock
 
 # A BBSW/OIS spread wider than this is not a quiet technical wedge any more --
 # it is bank funding stress, and it changes which instrument expresses the view.
@@ -278,7 +279,7 @@ def analyse(quotes, path: StripPath, meetings: list[Meeting],
         return BillCurve(error="no usable bank bill quotes")
 
     stale = stale_codes or set()
-    today = as_of or date.today()
+    today = as_of or clock.today()
     effs = sorted(((m, effective_date(m.end)) for m in meetings), key=lambda t: t[1])
     out: list[BillPeriod] = []
 

@@ -33,11 +33,12 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from .common import Observation
+from core import clock
 
 SCHEMA = 1
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
@@ -100,7 +101,7 @@ def save(key: str, observations: Iterable[Observation],
     payload = {
         "schema": SCHEMA,
         "key": key,
-        "fetched_at": (fetched_at or datetime.now(timezone.utc).date()).isoformat(),
+        "fetched_at": (fetched_at or clock.today()).isoformat(),
         "observations": [[d.isoformat(), v] for d, v in rows],
     }
     try:
@@ -142,7 +143,7 @@ def write_json(key: str, rows: list[dict]) -> None:
     share one directory, one atomic-write path and one `clear`.
     """
     _write_atomic(key, {"schema": SCHEMA, "key": key,
-                        "fetched_at": datetime.now(timezone.utc).date().isoformat(),
+                        "fetched_at": clock.today().isoformat(),
                         "rows": rows})
 
 
@@ -191,7 +192,7 @@ def get_series(
     nothing. Pass 1 for a series that publishes at most daily and the cache
     answers from disk until tomorrow.
     """
-    now = today or datetime.now(timezone.utc).date()
+    now = today or clock.today()
     cached = load(key)
 
     if (recheck_after and cached and cached.observations and cached.fetched_at

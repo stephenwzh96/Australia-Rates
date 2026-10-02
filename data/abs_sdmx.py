@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 import requests
 
 from . import cache
 from .common import Observation
+from core import clock
 
 BASE = "https://data.api.abs.gov.au/rest/data/ABS,{flow}/{key}/"
 TIMEOUT = 60
@@ -166,7 +167,7 @@ def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
     fresh = False
     if stamp:
         try:
-            age = (datetime.now(timezone.utc).date() - date.fromisoformat(stamp)).days
+            age = (clock.today() - date.fromisoformat(stamp)).days
             fresh = age < max_age_days
         except ValueError:
             fresh = False
@@ -188,7 +189,7 @@ def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
     got = _fetch_panel(flow, key, dims, start)
     if got is None:
         return unpack(cached)
-    rows = [{"fetched": datetime.now(timezone.utc).date().isoformat()}]
+    rows = [{"fetched": clock.today().isoformat()}]
     rows += [{"k": k, "d": o.date.isoformat(), "v": o.value} for k, obs in got.items()
              for o in obs]
     cache.write_json(ckey, rows)
@@ -212,7 +213,7 @@ def codelist(flow: str, version: str, codelist_id: str,
     rows = [(r["c"], r["n"], r.get("p", "")) for r in cached if "c" in r]
     if stamp and rows:
         try:
-            if (datetime.now(timezone.utc).date() - date.fromisoformat(stamp)).days < max_age_days:
+            if (clock.today() - date.fromisoformat(stamp)).days < max_age_days:
                 return rows
         except ValueError:
             pass
@@ -237,7 +238,7 @@ def codelist(flow: str, version: str, codelist_id: str,
     except requests.RequestException:
         return rows
     if got:
-        cache.write_json(ckey, [{"fetched": datetime.now(timezone.utc).date().isoformat()}]
+        cache.write_json(ckey, [{"fetched": clock.today().isoformat()}]
                          + [{"c": c, "n": n, "p": p} for c, n, p in got])
         return got
     return rows

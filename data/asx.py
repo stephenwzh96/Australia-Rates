@@ -52,7 +52,7 @@ BBSW rate and needs no un-blending at all (see `core.bbsw`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 
 import requests
 
@@ -60,6 +60,7 @@ from core.contracts import MONTH_CODES, ib_contract_code, ir_contract_code
 
 from . import asx_snapshots, cache
 from .common import Observation
+from core import clock
 
 BASE = ("https://asx.api.markitdigital.com/asx-research/1.0/"
         "derivatives/interest-rate/{kind}/futures")
@@ -292,7 +293,7 @@ def _to_dict(q: Quote) -> dict:
 
 
 def _from_dict(r: dict, kind: str) -> Quote:
-    month = month_from_symbol(r.get("symbol", "")) or date.today().replace(day=1)
+    month = month_from_symbol(r.get("symbol", "")) or clock.today().replace(day=1)
 
     def _d(key: str) -> date | None:
         v = r.get(key)
