@@ -513,6 +513,34 @@ def fetch_labour_grid() -> dict[str, list[tuple[date, float]]]:
     return out
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the Household Spending Indicator…")
+def fetch_hsi() -> dict[str, list]:
+    """ABS Household Spending Indicator, A$m, current price, seasonally
+    adjusted, national, monthly -- the total and every category, as
+    `data.common.Observation`s keyed by HSI category code."""
+    raw = abs_sdmx.panel("HSI_M,1.6.0", "7..CUR.20.AUS.M", ("CATEGORY",), start="2018")
+    return raw
+
+
+def _observations(rows) -> list[Observation]:
+    return [Observation(d, v) for d, v in rows or []]
+
+
+def fetch_growth_inputs() -> tuple[list[Observation], dict[str, list[Observation]]]:
+    """Monthly hours worked (RBA H5, first of the month) and RBA table H1."""
+    hours = _observations(_by_month(rba_table("h5").get("GLFMHW")))
+    h1 = {k: _observations(v) for k, v in rba_table("h1").items()}
+    return hours, h1
+
+
+def fetch_household_income() -> dict[str, list[Observation]]:
+    """RBA table H2 -- real consumption and disposable income, saving ratio --
+    with each quarter dated on its first month, as the growth chart steps."""
+    from core.growth import quarter_start
+    return {k: [Observation(quarter_start(d), v) for d, v in rows]
+            for k, rows in rba_table("h2").items()}
+
+
 def manual_series(name: str) -> list[tuple[date, float]]:
     """A manual series off disk, for the sources with no public feed."""
     try:

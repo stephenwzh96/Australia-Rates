@@ -25,6 +25,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from core import cpi_monthly as cpi_monthly_mod
+from core import growth as growth_mod
 from core import labor
 from core import path as pathmod
 from core import pricing, sizing
@@ -3372,4 +3373,496 @@ def wage_price_index(lines, p: Palette, height: int = 440,
     values = [o.value for ln in live for o in trimmed[ln.key]]
     fig.update_yaxes(dtick=0.2, range=[min(0.0, math.floor(min(values) * 5) / 5) - 0.1,
                                        math.ceil(max(values) * 5 + 0.5) / 5])
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Growth: activity tracker, household spending and finances (from the US app)
+# ---------------------------------------------------------------------------
+
+#: The published chart's own colours, which are the point of it: the weekly
+#: index in a pale rose that the eye reads as noise, its 13-week average in a
+#: saturated crimson that reads as signal, and the two quarterly accounts in
+#: neutral slates behind both. Palette roles (positive/negative) would recolour
+#: this as agreement and disagreement, which is not what the lines mean.
+_GROWTH_COLOURS = {
+    "light": {growth_mod.HOURS: "#d98fa3", growth_mod.GDI: "#b9c0d0",
+              growth_mod.GDP: "#4a5670", growth_mod.HOURS_SMOOTH: "#9c2743"},
+    "dark": {growth_mod.HOURS: "#e0a0b2", growth_mod.GDI: "#aeb6c9",
+             growth_mod.GDP: "#93a4c6", growth_mod.HOURS_SMOOTH: "#d4415f"},
+}
+_GROWTH_WIDTHS = {growth_mod.HOURS: 1.2, growth_mod.GDI: 1.5,
+                  growth_mod.GDP: 1.5, growth_mod.HOURS_SMOOTH: 3.2}
+
+
+#: (tick format, dtick) by plotted span, in days. An explicit month dtick, not
+#: a tick COUNT: plotly places a count freely, so several ticks can land inside
+#: one year and "%Y" then labels them all identically -- "2026 2026 2026" along
+#: the axis. A month dtick anchors one tick per period, and the shorter windows
+#: switch to "%b %Y" because a year label repeated by design is the same defect.
+_GROWTH_TICKS: tuple[tuple[int, str, str], ...] = (
+    (400, "%b %Y", "M2"),
+    (800, "%b %Y", "M3"),
+    (1300, "%b %Y", "M6"),
+    (4400, "%Y", "M12"),
+)
+_GROWTH_TICKS_WIDE = ("%Y", "M24")
+
+
+def _growth_ticks(span_days: int) -> tuple[str, str]:
+    for limit, fmt, dtick in _GROWTH_TICKS:
+        if span_days <= limit:
+            return fmt, dtick
+    return _GROWTH_TICKS_WIDE
+
+
+def _quarter_close(d: date) -> date:
+    """The start of the quarter after `d` -- where its step tread ends.
+
+    A quarterly point dated on the quarter's FIRST day, drawn as a step, would
+    otherwise stop the line three months short of what the series actually
+    covers, and the chart's right edge would look like missing data.
+    """
+    m = d.month - 1 + 3
+    return date(d.year + m // 12, m % 12 + 1, 1)
+
+
+def au_growth(series_list, p: Palette, height: int = 460,
+              window_start: date | None = None,
+              vintage: "Vintage | None" = None,
+              width_px: float = PANEL_WIDTH_PX) -> go.Figure:
+    """Australian economic growth: monthly hours worked against the accounts."""
+    colours = _GROWTH_COLOURS["dark" if p.mode == "dark" else "light"]
+    fig = go.Figure()
+
+    trimmed = {s.code: [o for o in s.observations
+                        if window_start is None or o.date >= window_start]
+               for s in series_list}
+    live = [s for s in series_list if trimmed[s.code]]
+    if not live:
+        fig.add_annotation(text="No growth data", showarrow=False,
+                           font=dict(color=p.ink))
+        fig.update_layout(height=height, paper_bgcolor=p.surface,
+                          plot_bgcolor=p.plane)
+        return fig
+
+    all_dates: list[date] = []
+    for s in live:
+        obs = trimmed[s.code]
+        xs = [o.date for o in obs]
+        ys = [o.value for o in obs]
+        step = s.cadence == "quarterly"
+        if step:
+            xs, ys = xs + [_quarter_close(xs[-1])], ys + [ys[-1]]
+        all_dates += xs
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, name=s.label, mode="lines",
+            line=dict(width=_GROWTH_WIDTHS.get(s.code, 1.5),
+                      color=colours.get(s.code, p.ink),
+                      shape="hv" if step else "linear"),
+            hovertemplate=f"{s.label}: %{{y:.2f}}%<extra></extra>",
+        ))
+
+    min_date, max_date = min(all_dates), max(all_dates)
+    values = [o.value for s in live for o in trimmed[s.code]]
+    y_min = math.floor(min(values) - 0.6)
+    y_max = math.ceil(max(values) + 0.6)
+
+    units = "Year-over-year percent change"
+    # In a half-width panel the vintage line takes a line of its own.
+    narrow = width_px < PANEL_WIDTH_PX
+    subtitle = units
+    if vintage and vintage.line:
+        subtitle += ("<br>" if narrow else "  ·  ") + vintage.line
+    top = 92 if narrow and vintage and vintage.line else 70
+    legend, legend_margin = bottom_legend([s.label for s in live], width_px)
+    fig.update_layout(
+        height=height,
+        title=dict(text="Australian Economic Growth", x=0.0, xanchor="left",
+                   font=title_font(p),
+                   subtitle=dict(text=subtitle, font=subtitle_font(p))),
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+        font=dict(color=p.ink, size=12),
+        margin=dict(l=52, r=20, t=top, b=legend_margin),
+        showlegend=True,
+        legend=legend,
+        hovermode="x unified",
+    )
+    fig.update_yaxes(title=None, range=[y_min, y_max], dtick=2,
+                     gridcolor=p.grid, zeroline=False, ticksuffix="%")
+    # Year boundaries as their own dotted rules, not the tick grid: the tick
+    # spacing changes with the window (every 2 months at 1Y, every 2 years at
+    # All), and the year marks should not.
+    for year in range(min_date.year + 1, max_date.year + 1):
+        fig.add_shape(type="line", xref="x", yref="paper",
+                      x0=date(year, 1, 1), x1=date(year, 1, 1), y0=0, y1=1,
+                      line=dict(color=p.muted, width=1, dash="dot"),
+                      layer="below")
+
+    xfmt, xdtick = _growth_ticks((max_date - min_date).days)
+    fig.update_xaxes(type="date", tickformat=xfmt, dtick=xdtick,
+                     hoverformat="%d %b %Y", showgrid=False,
+                     range=[min_date, max_date])
+    return fig
+
+
+def household_spending(lines, p: Palette, height: int = 440,
+                         window_start: date | None = None,
+                         vintage: "Vintage | None" = None,
+                         readout: bool = True) -> go.Figure:
+    """Household spending (ABS HSI): 1-month AR bars, 3-month AR and 12-month
+    lines -- the US retail control group panel.
+
+    `readout=False` drops the latest-print block on the right -- the caller
+    shows those figures on a board above -- and the plot takes its width."""
+    col = _consumer_colours(p)
+    colour = {"1m": col["bar"], "3m": col["3m"], "12m": col["12m"]}
+    fig = go.Figure()
+    trimmed, live = _trim_lines(lines, window_start)
+    if not live:
+        return _consumer_empty(fig, "No household spending data", p, height)
+
+    for ln in live:
+        obs = trimmed[ln.key]
+        xs, ys = [o.date for o in obs], [o.value for o in obs]
+        hover = f"{ln.label}: %{{y:.1f}}%<extra></extra>"
+        if ln.key == "1m":
+            fig.add_trace(go.Bar(x=xs, y=ys, name=ln.label, marker_color=colour[ln.key],
+                                 marker_line_width=0, hovertemplate=hover))
+        else:
+            fig.add_trace(go.Scatter(x=xs, y=ys, name=ln.label, mode="lines",
+                                     line=dict(width=3.0, color=colour[ln.key]),
+                                     hovertemplate=hover))
+
+    # The legend's own tone for the bars is one step darker than the bars: the
+    # pale fill that sits quietly behind the lines is too faint as type.
+    title = _swatch_title("Household Spending",
+                          [(ln.label, p.muted if ln.key == "1m" else colour[ln.key])
+                           for ln in live], "  |  ", p)
+    latest = max((trimmed[ln.key][-1].date for ln in live))
+    by_key = {ln.key: ln for ln in live}
+    if readout:
+        _readout(fig, f"{latest:%B %Y}",
+                 [(f"{by_key[k].label.split(' (')[0]}:", f"{trimmed[k][-1].value:.1f}%",
+                   p.ink_secondary)
+                  for k in ("1m", "3m", "12m")
+                  if k in by_key and trimmed[k][-1].date == latest],
+                 p)
+    bottom = _footer(fig, [f"Latest data: {latest:%B %Y}  ·  Household Spending Indicator, "
+                           "current price, SA  ·  Source: ABS",
+                           vintage.line if vintage else ""], p)
+    dates = [o.date for ln in live for o in trimmed[ln.key]]
+    _monthly_frame(fig, p, height, dates, title, bottom, ".0f",
+                   right=_CONSUMER_READOUT_PX if readout else _BARE_RIGHT_PX)
+    return fig
+
+
+def household_finances(lines, p: Palette, height: int = 440,
+                       window_start: date | None = None,
+                       vintage: "Vintage | None" = None,
+                       readout: bool = True) -> go.Figure:
+    """Real household consumption and real disposable income, year-ended,
+    quarterly (RBA H2) -- the US panel's spending and income at the cadence
+    Australia publishes them. `readout=False` as for `household_spending`."""
+    col = _consumer_colours(p)
+    fig = go.Figure()
+    trimmed, live = _trim_lines(lines, window_start)
+    if not live:
+        return _consumer_empty(fig, "No household income data", p, height)
+
+    for ln in live:
+        obs = trimmed[ln.key]
+        xs, ys = [o.date for o in obs], [o.value for o in obs]
+        hover = f"{ln.label}: %{{y:.2f}}%<extra></extra>"
+        if ln.key == "spending":
+            fig.add_trace(go.Bar(x=xs, y=ys, name=ln.label, marker_color=col["spending"],
+                                 marker_line_width=0, hovertemplate=hover))
+        else:
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, name=ln.label, mode="lines",
+                line=dict(width=3.0, color=col[ln.key],
+                          dash="dash" if ln.key == "ex_transfers" else None),
+                hovertemplate=hover))
+
+    order = {"income": 0, "spending": 1}
+    named = sorted(live, key=lambda ln: order[ln.key])
+    tone = consumer_tones(p)
+    # Without the readout block the chart sits in a half-width panel, where the
+    # full names would run off the edge.
+    compact = {"income": "Real disposable income", "spending": "Consumption"}
+    parts = [(ln.label if readout else compact[ln.key], tone[ln.key]) for ln in named]
+    names = ", ".join(f'<span style="color:{c}"><b>{html.escape(t)}</b></span>'
+                      for t, c in parts[:-1])
+    last = parts[-1]
+    tail = f'<span style="color:{last[1]}"><b>{html.escape(last[0])}</b></span>'
+    subtitle = (f"<i>Year-ended percent change in</i> {names} <i>and</i> {tail}"
+                if len(parts) > 1 else f"<i>Year-ended percent change in</i> {tail}")
+    title = dict(text="Australian Household Finances", x=0.0, xanchor="left",
+                 font=title_font(p), subtitle=dict(text=subtitle, font=subtitle_font(p)))
+
+    latest = max(trimmed[ln.key][-1].date for ln in live)
+    short = {"income": "Income:", "spending": "Consumption:"}
+    if readout:
+        _readout(fig, f"{latest:%B %Y}",
+                 [(short[ln.key], f"{trimmed[ln.key][-1].value:+.1f}%", tone[ln.key])
+                  for ln in named if trimmed[ln.key][-1].date == latest], p)
+    bottom = _footer(fig, [f"Latest data: {_q_label(latest)}  ·  Real, seasonally adjusted  ·  "
+                           "Source: ABS national accounts via RBA table H2",
+                           vintage.line if vintage else ""], p)
+    dates = [o.date for ln in live for o in trimmed[ln.key]]
+    _monthly_frame(fig, p, height, dates, title, bottom, ".1f",
+                   right=_CONSUMER_READOUT_PX if readout else _BARE_RIGHT_PX,
+                   hoverformat="%Y Q%q", pad_days=45)
+    return fig
+
+
+def consumer_tones(p: Palette) -> dict[str, str]:
+    """The household chart's own colour for each line, for a board beside it."""
+    col = _consumer_colours(p)
+    return {"income": col["income"], "ex_transfers": col["ex_transfers"],
+            "spending": p.muted}
+
+
+# ------------------------------------------------ retail categories (bubbles)
+
+#: The bubble chart runs the full width, like the charts above it. Only used
+#: to place labels in pixel space before Plotly lays the figure out.
+BUBBLE_PANEL_PX = 880
+_BUBBLE_MAX_PX = 140      # the largest category's diameter at panel width
+_BUBBLE_MIN_PX = 16
+_BUBBLE_FENCE = 2.0       # interquartile ranges beyond the quartiles = off-scale
+_BUBBLE_LABEL_CHAR_PX = 6.6
+_BUBBLE_LABEL_H_PX = 15
+_BUBBLE_LABEL_PAD_PX = 2  # clear air kept round every label
+
+
+def _quartiles(values: list[float]) -> tuple[float, float]:
+    s = sorted(values)
+    def q(f: float) -> float:
+        i = f * (len(s) - 1)
+        lo = math.floor(i)
+        return s[lo] + (s[min(lo + 1, len(s) - 1)] - s[lo]) * (i - lo)
+    return q(0.25), q(0.75)
+
+
+def _fence(values: list[float]) -> tuple[float, float]:
+    """The range beyond which a category is drawn as an off-scale arrow.
+
+    Gasoline is the case in point: a 15% month for gas would otherwise set the
+    axis and crush every other category into a band at the bottom. A Tukey
+    fence at two interquartile ranges keeps the ordinary spread on the chart
+    and sends only a genuine outlier off it.
+    """
+    q1, q3 = _quartiles(values)
+    spread = max(q3 - q1, 1.0)
+    return q1 - _BUBBLE_FENCE * spread, q3 + _BUBBLE_FENCE * spread
+
+
+def _axis_range(values: list[float], step: float, pad: float) -> tuple[float, float]:
+    lo = math.floor((min(values) - pad) / step) * step
+    hi = math.ceil((max(values) + pad) / step) * step
+    return min(lo, 0.0), max(hi, 0.0)
+
+
+def _rect_overlap(a: tuple, b: tuple) -> float:
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return w * h if w > 0 and h > 0 else 0.0
+
+
+def _circle_overlap(rect: tuple, cx: float, cy: float, r: float) -> float:
+    """Rough area a label shares with a disc: its overlap with the disc's
+    bounding square, scaled by the disc's share of that square."""
+    return _rect_overlap(rect, (cx - r, cy - r, cx + r, cy + r)) * math.pi / 4
+
+
+def _label_slots(r: float, w: float, gap: float = 3.0) -> list[tuple]:
+    """Candidate (dx, dy, xanchor, yanchor, far) offsets around a disc of radius r,
+    in order of preference: the four sides, the diagonals, then a second ring
+    further out for a crowded patch, and the centre when the label fits inside."""
+    slots = []
+    for far, ring in ((False, r + gap), (True, r + gap + 18)):
+        d = ring * 0.72
+        slots += [(0, -ring, "center", "bottom", far), (ring, 0, "left", "middle", far),
+                  (0, ring, "center", "top", far), (-ring, 0, "right", "middle", far),
+                  (d, -d, "left", "bottom", far), (-d, -d, "right", "bottom", far),
+                  (d, d, "left", "top", far), (-d, d, "right", "top", far)]
+    if r * 2 > w + 8:
+        slots.insert(0, (0, 0, "center", "middle", False))
+    return slots
+
+
+def _place_labels(items: list[dict], plot_w: float,
+                  plot_h: float) -> list[tuple[float, float, str, str, bool]]:
+    """Greedy label placement in pixel space, biggest disc first.
+
+    Each label tries the slots from `_label_slots` and keeps the one that
+    collides least with: labels already placed (hard), the plot edge (hard),
+    and other discs' outlines (soft -- text over an outline is legible, text
+    over text is not). Returns (dx, dy, xanchor, yanchor, far) per item, in
+    order; `far` marks a label pushed out to the second ring, which gets a
+    leader line back to its disc.
+    """
+    placed: list[tuple] = []
+    out: dict[int, tuple] = {}
+    h = _BUBBLE_LABEL_H_PX
+    for i in sorted(range(len(items)), key=lambda k: -items[k]["r"]):
+        it = items[i]
+        cx, cy, r = it["px"], it["py"], it["r"]
+        w = len(it["label"]) * it.get("char_px", _BUBBLE_LABEL_CHAR_PX) + 4
+        best, best_rect, best_score = None, None, float("inf")
+        for rank, (dx, dy, xa, ya, far) in enumerate(_label_slots(r, w)):
+            x0 = cx + dx - (w / 2 if xa == "center" else (w if xa == "right" else 0))
+            y0 = cy + dy - (h / 2 if ya == "middle" else (h if ya == "bottom" else 0))
+            pad = _BUBBLE_LABEL_PAD_PX
+            rect = (x0 - pad, y0 - pad, x0 + w + pad, y0 + h + pad)
+            score = rank * 25.0
+            score += sum(_rect_overlap(rect, o) for o in placed) * 12
+            score += sum(_circle_overlap(rect, o["px"], o["py"], o["r"])
+                         for j, o in enumerate(items) if j != i) * 0.6
+            outside = (max(0, -x0) + max(0, rect[2] - plot_w)
+                       + max(0, -y0) + max(0, rect[3] - plot_h))
+            score += outside * h * 12
+            if score < best_score:
+                best, best_rect, best_score = (dx, dy, xa, ya, far), rect, score
+        placed.append(best_rect)
+        out[i] = best
+    return [out[i] for i in range(len(items))]
+
+
+def spending_bubbles(snap, p: Palette, height: int = 600,
+                   vintage: "Vintage | None" = None,
+                   width_px: float = BUBBLE_PANEL_PX) -> go.Figure:
+    """HSI categories in the latest month: y/y across, m/m up, sized by spend."""
+    col = _consumer_colours(p)
+    fig = go.Figure()
+    if snap is None or not snap.categories:
+        return _consumer_empty(fig, "No household spending category data", p, height)
+
+    cats = snap.categories
+    x_fence = _fence([c.yoy for c in cats])
+    y_fence = _fence([c.mom for c in cats])
+
+    def inside(pt) -> bool:
+        return x_fence[0] <= pt.yoy <= x_fence[1] and y_fence[0] <= pt.mom <= y_fence[1]
+
+    shown = [c for c in cats if inside(c)]
+    off = [c for c in cats if not inside(c)]
+    xs = [c.yoy for c in shown] + [snap.overall.yoy]
+    ys = [c.mom for c in shown] + [snap.overall.mom]
+    x0, x1 = _axis_range(xs, 5.0, 2.5)
+    y0, y1 = _axis_range(ys, 1.0, 0.6)
+    # Half a step under the lowest y tick, so its label clears the first x
+    # tick in the corner the two axes share.
+    y0 -= 0.5
+
+    # The fence decides which categories may set the axes; the arrow is only
+    # for one that then falls outside them. A category past the fence that
+    # still lands inside the plot is drawn as an ordinary bubble -- otherwise
+    # it would lose its bubble and get a zero-length arrow on its own spot.
+    def on_axes(pt) -> bool:
+        return x0 <= pt.yoy <= x1 and y0 <= pt.mom <= y1
+
+    shown += [c for c in off if on_axes(c)]
+    off = [c for c in off if not on_axes(c)]
+
+    margin = dict(l=64, r=24, t=_CONSUMER_TOP, b=0)
+    lines = ["Adjusted for seasonal, holiday and trading-day differences  ·  "
+             "area is share of spending  ·  Source: ABS Household Spending Indicator",
+             vintage.line if vintage else ""]
+    margin["b"] = _footer(fig, lines, p, below=22)      # 22px: the x axis title
+    plot_w = width_px - margin["l"] - margin["r"]
+    plot_h = height - margin["t"] - margin["b"]
+
+    def to_px(x: float, y: float) -> tuple[float, float]:
+        return ((x - x0) / (x1 - x0) * plot_w, (y1 - y) / (y1 - y0) * plot_h)
+
+    biggest = max(c.sales for c in cats)
+    max_px = _BUBBLE_MAX_PX * min(1.0, plot_w / 720)
+
+    def diameter(c) -> float:
+        return max(_BUBBLE_MIN_PX, max_px * math.sqrt(c.sales / biggest))
+
+    fig.add_trace(go.Scatter(
+        x=[c.yoy for c in shown], y=[c.mom for c in shown], mode="markers",
+        marker=dict(size=[diameter(c) for c in shown], sizemode="diameter",
+                    color=col["bubble_fill"], line=dict(color=col["bubble"], width=1.3)),
+        customdata=[[c.label, c.share] for c in shown],
+        hovertemplate=("<b>%{customdata[0]}</b><br>m/m: %{y:+.1f}%<br>y/y: %{x:+.1f}%"
+                       "<br>share of spending: %{customdata[1]:.1f}%<extra></extra>"),
+        showlegend=False))
+    fig.add_trace(go.Scatter(
+        x=[snap.overall.yoy], y=[snap.overall.mom], mode="markers",
+        marker=dict(symbol="star", size=20, color=col["star"],
+                    line=dict(width=0)),
+        hovertemplate=("<b>Overall</b><br>m/m: %{y:+.1f}%<br>y/y: %{x:+.1f}%"
+                       "<extra></extra>"),
+        showlegend=False))
+
+    items = []
+    for c in shown:
+        px, py = to_px(c.yoy, c.mom)
+        items.append(dict(label=c.label, px=px, py=py, r=diameter(c) / 2))
+    sx, sy = to_px(snap.overall.yoy, snap.overall.mom)
+    overall_item = dict(label="Overall", px=sx, py=sy, r=10, char_px=8.4)
+    slots = _place_labels(items + [overall_item], plot_w, plot_h)
+    for it, (dx, dy, xa, ya, far), pt in zip(items + [overall_item], slots,
+                                             shown + [snap.overall]):
+        is_overall = it is overall_item
+        text = f"<b>{it['label']}</b>" if is_overall else html.escape(it["label"])
+        font = dict(size=14 if is_overall else 11,
+                    color=col["star"] if is_overall else p.ink_secondary)
+        if far:
+            # A label pushed out of a crowd keeps a hairline back to its disc,
+            # so it cannot be read as naming the neighbour it now sits beside.
+            fig.add_annotation(
+                x=pt.yoy, y=pt.mom, xref="x", yref="y", showarrow=True,
+                ax=dx, ay=dy, axref="pixel", ayref="pixel", arrowhead=0,
+                arrowwidth=0.8, arrowcolor=p.muted, standoff=it["r"],
+                xanchor=xa, yanchor=ya, text=text, font=font)
+        else:
+            fig.add_annotation(
+                x=pt.yoy, y=pt.mom, xref="x", yref="y", showarrow=False,
+                xshift=dx, yshift=-dy, xanchor=xa, yanchor=ya, text=text, font=font)
+
+    # Off-scale categories: an arrow on the edge they left by, their real
+    # coordinates written beside it.
+    for c in off:
+        ex = min(max(c.yoy, x0), x1)
+        ey = min(max(c.mom, y0), y1)
+        vx = (c.yoy > x1) - (c.yoy < x0)
+        vy = (c.mom > y1) - (c.mom < y0)
+        inset_x = (x1 - x0) * 0.04
+        inset_y = (y1 - y0) * 0.05
+        hx, hy = ex - vx * inset_x, ey - vy * inset_y
+        fig.add_annotation(
+            x=hx, y=hy, xref="x", yref="y", showarrow=True, arrowhead=2,
+            arrowsize=1.1, arrowwidth=2.2, arrowcolor=p.ink_secondary,
+            ax=-vx * 40, ay=vy * 40, standoff=0,
+            text=(f"{html.escape(c.label)}<br>({c.yoy:+.0f}% y/y, {c.mom:+.0f}% m/m)"),
+            font=dict(size=11, color=p.ink_secondary), align="center",
+            yanchor="top" if vy > 0 else "bottom",
+            xanchor="right" if vx > 0 and vy == 0 else "center")
+
+    fig.update_layout(
+        height=height,
+        title=dict(text="Household Spending by Category", x=0.0, xanchor="left",
+                   font=title_font(p),
+                   subtitle=dict(text=f"<i>{snap.month:%B %Y} adjusted data, percent change</i>",
+                                 font=subtitle_font(p))),
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+        font=dict(color=p.ink, size=12), margin=margin, showlegend=False,
+        hovermode="closest")
+    fig.add_shape(type="line", xref="x", yref="paper", x0=0, x1=0, y0=0, y1=1,
+                  line=dict(color=p.ink_secondary, width=1.2), layer="below")
+    fig.add_shape(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0,
+                  line=dict(color=p.ink_secondary, width=1.2), layer="below")
+    fig.update_xaxes(range=[x0, x1], dtick=5.0, ticksuffix="%", zeroline=False,
+                     gridcolor=p.grid,
+                     title=dict(text="<b>Year-over-Year</b>", standoff=6,
+                                font=dict(size=13, color=p.ink_secondary)))
+    fig.update_yaxes(range=[y0, y1], dtick=1.0, ticksuffix="%", zeroline=False,
+                     gridcolor=p.grid,
+                     title=dict(text="<b>Month-over-Month</b>", standoff=6,
+                                font=dict(size=13, color=p.ink_secondary)))
     return fig
