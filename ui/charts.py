@@ -33,6 +33,7 @@ from core import path as pathmod
 from core import pricing, sizing
 from core.pricing import Side
 
+from . import bloc_icons
 from .theme import Palette
 
 LINE_WIDTH = 2
@@ -4154,3 +4155,182 @@ def smp_cash_path(points, p: Palette, latest_label: str, prior_label: str,
                                                    color=p.ink).encode(
                 x=x, y=y, text=alt.Text("rate:Q", format=".1f")))
     return _apply(alt.layer(*layers), p, height)
+
+
+# ---------------------------------------------------------------------------
+# Vote count: where the Board sits, and how it has voted
+# ---------------------------------------------------------------------------
+
+def hawk_dove_transition(records, p: Palette, height: int | None = None,
+                         ) -> alt.LayerChart:
+    """Where every Board member sits on the hawk-dove scale, and which way they
+    moved over the last meeting."""
+    recs = [r for r in records if r.get("s2") is not None]
+    if not recs:
+        return _apply(
+            alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()),
+            p, height or 160)
+
+    order = [r["name"] for r in recs]
+    rows, seg, imgs = [], [], []
+    for r in recs:
+        s1, s2 = r.get("s1"), r["s2"]
+        d = None if s1 is None else s2 - s1
+        travel = ("hawkish" if (d is not None and d > 0.05)
+                  else "dovish" if (d is not None and d < -0.05) else "flat")
+        rows.append({
+            "name": r["name"], "role": r.get("role", ""),
+            "seat": "Votes" if r.get("voter") else "No vote",
+            "hl": "voter" if r.get("voter") else "non-voter",
+            "s1": s1, "s2": s2, "travel": travel,
+            "shift": "\u2014" if d is None else f"{d:+.1f}",
+            "op": 1.0 if r.get("voter") else 0.5,
+            "mover": bool(r.get("mover")),
+            "cand": "move candidate" if r.get("mover") else "\u2014",
+            "bloc": str(r.get("bloc") or "").strip() or "\u2014",
+            "icon": bloc_icons.icon_uri(r.get("bloc"), p.ink_secondary),
+        })
+        if s1 is not None:
+            seg.append({"name": r["name"], "s1": s1, "s2": s2,
+                        "travel": travel, "op": 1.0 if r.get("voter") else 0.5})
+        if r.get("avatar"):
+            imgs.append({"name": r["name"], "avatar": r["avatar"],
+                         "op": 1.0 if r.get("voter") else 0.55})
+    df = pd.DataFrame(rows)
+    sdf = pd.DataFrame(seg)
+    idf = pd.DataFrame(imgs)
+
+    travel_scale = alt.Scale(domain=["hawkish", "dovish", "flat"],
+                             range=[p.negative, p.positive, p.ink_secondary])
+    name_scale = alt.Scale(domain=["voter", "non-voter"],
+                           range=[p.voter_ink, p.ink_secondary])
+    y_enc = alt.Y("name:N", sort=order,
+                  scale=alt.Scale(padding=6),
+                  axis=alt.Axis(title=None, grid=True, ticks=False,
+                                domain=False, labels=False))
+    _xs = alt.Scale(domain=[-0.12, 5.28], clamp=True)
+    x_enc = alt.X("s2:Q", scale=_xs, axis=alt.Axis(
+        title="dovish  \u2190          hawk\u2013dove score          \u2192  hawkish",
+        values=[0, 1, 2, 3, 4, 5], format="d"))
+    x1_enc = alt.X("s1:Q", scale=_xs)
+
+    layers = []
+    layers.append(alt.Chart(pd.DataFrame({"x": [2.5]})).mark_rule(
+        color=p.baseline, strokeWidth=1, strokeDash=[3, 3]).encode(x="x:Q"))
+    if not sdf.empty:
+        layers.append(alt.Chart(sdf).mark_rule(strokeWidth=2.5).encode(
+            y=y_enc, x=x1_enc, x2="s2:Q",
+            opacity=alt.Opacity("op:Q", legend=None),
+            color=alt.Color("travel:N", scale=travel_scale, legend=None)))
+        layers.append(alt.Chart(sdf).mark_point(
+            filled=True, size=48, color=p.surface, strokeWidth=1.5).encode(
+            y=y_enc, x=x1_enc,
+            opacity=alt.Opacity("op:Q", legend=None),
+            stroke=alt.Color("travel:N", scale=travel_scale, legend=None)))
+    layers.append(alt.Chart(df).mark_point(
+        filled=True, size=110, stroke=p.surface, strokeWidth=1.5).encode(
+        y=y_enc, x=x_enc,
+        opacity=alt.Opacity("op:Q", legend=None),
+        color=alt.Color("travel:N", scale=travel_scale, legend=None),
+        tooltip=[alt.Tooltip("name:N", title="member"),
+                 alt.Tooltip("role:N", title="role"),
+                 alt.Tooltip("seat:N", title="vote"),
+                 alt.Tooltip("bloc:N", title="bloc now"),
+                 alt.Tooltip("s1:Q", format=".1f", title="score @ last meeting"),
+                 alt.Tooltip("s2:Q", format=".1f", title="score now"),
+                 alt.Tooltip("shift:N", title="shift"),
+                 alt.Tooltip("cand:N", title="flag")]))
+    if bool(df["mover"].any()):
+        layers.append(alt.Chart(df).transform_filter("datum.mover").mark_text(
+            text="✓", align="left", dx=9, fontSize=11, fontWeight="bold",
+            color=p.accent).encode(
+            y=y_enc, x=x_enc, opacity=alt.Opacity("op:Q", legend=None)))
+    layers.append(alt.Chart(df).mark_text(
+        align="left", dx=22, fontSize=9, color=p.ink_secondary).encode(
+        y=y_enc, x=x_enc, text=alt.Text("s2:Q", format=".1f"),
+        opacity=alt.Opacity("op:Q", legend=None)))
+    if not idf.empty:
+        layers.append(alt.Chart(idf).mark_image(width=26, height=26).encode(
+            y=y_enc, x=alt.value(0), xOffset=alt.value(14),
+            url="avatar:N", opacity=alt.Opacity("op:Q", legend=None)))
+    # Names start just right of the bloc mark and run towards the photo, so
+    # every mark sits beside its own name and the ragged edge falls on the
+    # photo side, where the eye does not read.
+    layers.append(alt.Chart(df).mark_text(
+        align="left", fontSize=10, limit=126, dx=-133).encode(
+        y=y_enc, x=alt.value(0), text="name:N",
+        color=alt.Color("hl:N", scale=name_scale, legend=None),
+        opacity=alt.Opacity("op:Q", legend=None)))
+
+    if df["icon"].notna().any():
+        # The bloc pictogram, in a fixed column at the gutter's outer edge so
+        # the marks line up as a key down the page, each beside its name.
+        layers.append(alt.Chart(df).transform_filter("datum.icon").mark_image(
+            width=15, height=15).encode(
+            y=y_enc, x=alt.value(0), xOffset=alt.value(-145), url="icon:N",
+            opacity=alt.Opacity("op:Q", legend=None)))
+
+    h = height or max(200, 30 * len(recs) + 64)
+    # Names use their own voter/non-voter scale; shared, "voter" took the
+    # first colour of the travel scale and every voter's name came out red.
+    chart = alt.layer(*layers).resolve_scale(color="independent").properties(
+        padding={"left": 156, "top": 6, "right": 14, "bottom": 6})
+    return _apply(chart, p, h)
+
+
+def published_votes(decisions, p: Palette) -> tuple[alt.LayerChart, alt.LayerChart]:
+    """The Board's published vote at every meeting since it first sat, as two
+    charts sharing one meeting axis: the cash rate target stepping above, and
+    below it nine squares a meeting, one per member, coloured by what they
+    voted for, dissents outlined. The vote is unattributed, so a square is a
+    seat count, never a name -- the only read of the Board the RBA gives.
+    Two charts rather than a vconcat: a concat ignores the container width and
+    overflows its column."""
+    colours = {"hike": p.negative, "hold": p.muted, "cut": p.positive,
+               "against": p.ink_secondary}
+    rows, rate = [], []
+    for d in decisions:
+        label = f"{d.when:%b %y}"
+        rate.append({"m": label, "rate": d.level, "split": d.split if d.votes else "n/p"})
+        # Majority first from the floor, so the dissent is the top of the column.
+        order = [d.action] + sorted(a for a in d.votes if a != d.action)
+        seat = 0
+        for a in order:
+            for _ in range(d.votes.get(a, 0)):
+                rows.append({"m": label, "seat": seat, "vote": a,
+                             "dissent": a != d.action, "split": d.split,
+                             "decision": f"{d.action} to {d.level:.2f}%"})
+                seat += 1
+    order = [r["m"] for r in rate]
+    empty = _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()), p, 120)
+    if not rate:
+        return empty, empty
+    x_top = alt.X("m:N", sort=order, title=None,
+                  axis=alt.Axis(labels=False, ticks=False, domain=False))
+    steps = alt.Chart(pd.DataFrame(rate)).mark_line(
+        interpolate="step-after", color=p.ink, strokeWidth=1.8,
+        point=alt.OverlayMarkDef(filled=True, size=34, color=p.ink)).encode(
+        x=x_top,
+        y=alt.Y("rate:Q", title="Cash rate (%)", scale=alt.Scale(zero=False, nice=False,
+                padding=8), axis=alt.Axis(format=".2f", tickCount=4,
+                                                 minExtent=46, maxExtent=46)),
+        tooltip=[alt.Tooltip("m:N", title="meeting"), alt.Tooltip("rate:Q", format=".2f"),
+                 alt.Tooltip("split:N", title="vote")])
+    top = _apply(alt.layer(steps), p, 110)
+    if not rows:
+        return top, empty
+    x = alt.X("m:N", sort=order, title=None, axis=alt.Axis(labelAngle=0, labelFontSize=10))
+    votes = alt.Chart(pd.DataFrame(rows)).mark_square(size=100, opacity=0.95).encode(
+        x=x, y=alt.Y("seat:Q", title="Members", scale=alt.Scale(domain=[-0.6, 9.4]),
+                     axis=alt.Axis(values=[0, 4, 8], labelExpr="datum.value + 1",
+                                   grid=False, minExtent=46, maxExtent=46)),
+        color=alt.Color("vote:N", scale=alt.Scale(domain=list(colours),
+                                                  range=list(colours.values())), legend=None),
+        stroke=alt.condition("datum.dissent", alt.value(p.ink), alt.value(None)),
+        strokeWidth=alt.value(1.4),
+        tooltip=[alt.Tooltip("m:N", title="meeting"), alt.Tooltip("decision:N"),
+                 alt.Tooltip("split:N", title="vote"), alt.Tooltip("vote:N", title="this seat")])
+    split = alt.Chart(pd.DataFrame(rate)).mark_text(
+        fontSize=10, fontWeight=600, color=p.ink).encode(
+        x=x, y=alt.datum(9.2), text="split:N")
+    return top, _apply(alt.layer(votes, split), p, 190)

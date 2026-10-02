@@ -62,7 +62,7 @@ def label_for(name: str) -> str:
 
 
 def group_of(row: Mapping) -> str:
-    bloc = str(row.get("bloc") or "").strip()
+    bloc = str(row.get("bloc2") or row.get("bloc1") or row.get("bloc") or "").strip()
     if bloc in GROUPS:
         return bloc
     role = str(row.get("role") or "").lower()
@@ -133,7 +133,8 @@ def build(roster: Sequence[Mapping], label: str, values: Mapping[str, float | No
         rate = snap(values.get(name))
         if rate is None:
             continue
-        score = row.get("score")
+        score = next((row[k] for k in ("score2", "score1", "score")
+                      if isinstance(row.get(k), (int, float))), None)
         by_rate.setdefault(rate, []).append(Dot(
             name, label_for(name), str(row.get("role") or ""), group_of(row), rate,
             float(score) if isinstance(score, (int, float)) else None))

@@ -10,10 +10,10 @@ import hashlib
 import streamlit as st
 
 from core import dots as dots_mod
+from core import roster as R
 from core import smp as smp_mod
 from core import taylor
 from core import taylor_heatmap as th
-from data import rba_smp
 from ui import charts
 from ui import components as C
 from ui import sources as src
@@ -28,14 +28,9 @@ TAYLOR_VINTAGE_KEY = "_taylor_seed_vintage"
 FALLBACK = {"tm": (3.0, 2.6), "u": (4.6, 4.7)}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Reading the Statement on Monetary Policy…")
-def _rounds(as_of, released: tuple) -> list:
-    return rba_smp.rounds_before(as_of, 2, dict(released))
-
-
 def render(ctx: Ctx) -> None:
     released = tuple(((m.end.year, m.end.month), m.end) for m in ctx.meetings if m.has_smp)
-    rounds = _rounds(ctx.as_of, released)
+    rounds = src.fetch_smp_rounds(ctx.as_of, released)
     latest = rounds[0] if rounds else None
     prior = rounds[1] if len(rounds) > 1 else None
     table = smp_mod.build(latest, prior)
@@ -161,7 +156,7 @@ def _named_dots(ctx: Ctx, latest) -> None:
         held = dots["values"].get(name) or {}
         row = {"name": name, "role": str(r.get("role", "") or ""),
                "group": dots_mod.group_of(r)}
-        score = r.get("score")
+        score = R.active_score(r)
         row["score"] = float("nan") if score is None else float(score)
         row.update({lab: held.get(lab, float("nan")) for lab in labels})
         rows.append(row)

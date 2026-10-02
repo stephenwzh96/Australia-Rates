@@ -15,7 +15,7 @@ and the centre is what settles the contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 from .pricing import Side, breakeven_probability, expected_value
@@ -48,6 +48,13 @@ class VoteArithmetic:
     blocs: list[BlocTally]
     mover_names: list[str]
     majority_reachable: bool
+    # Always empty on the Board -- every member votes at every meeting -- but
+    # kept so the ported FOMC tab reads the same fields.
+    non_voters: list[str] = field(default_factory=list)
+
+    @property
+    def participants(self) -> int:
+        return self.total_voters + len(self.non_voters)
 
 
 def votes_needed(total_voters: int) -> int:
@@ -152,7 +159,10 @@ def voters_from_dicts(rows: Sequence[dict]) -> list[Voter]:
         Voter(
             name=r["name"],
             role=r.get("role", ""),
-            bloc=r.get("bloc", "Unassigned"),
+            bloc=(str(r.get("bloc2") or "").strip()
+                  or str(r.get("bloc1") or "").strip()
+                  or str(r.get("bloc") or "").strip()
+                  or "Unassigned"),
             score=float(r.get("score2", r.get("score1", r.get("score", 2.5)))),
             is_mover=bool(r.get("is_mover", False)),
         )

@@ -185,6 +185,30 @@ def previous_key(key: str) -> str | None:
     return saved[-1] if saved else None
 
 
+def baseline_key(state: dict[str, Any], key: str) -> str | None:
+    """The meeting a roster's Score @ last meeting was marked at."""
+    return state.get("score_baseline") or previous_key(key)
+
+
+def roll_roster(state: dict[str, Any], source_key: str,
+                source: dict[str, Any]) -> dict[str, Any]:
+    """Carry the scores forward from the meeting a state was cloned from: its
+    Score now becomes this meeting's Score @ last meeting, and the marks that
+    replaces are archived in `score_history` under the meeting they were taken
+    at. Stamps `score_baseline`, so a state is rolled once and only once."""
+    from core import roster as R
+    if not state.get("roster"):
+        return state
+    rows, history = R.roll(R.normalize_roster(state.get("roster") or []),
+                           state.get("score_history") or [],
+                           source.get("roster") or [],
+                           baseline_key(source, source_key))
+    state["roster"] = rows
+    state["score_history"] = history
+    state["score_baseline"] = source_key
+    return state
+
+
 def clone_forward(source_key: str, target: dict[str, Any], as_of: date) -> dict[str, Any]:
     """Deep-copy a prior meeting's state onto a new meeting.
 
@@ -237,7 +261,8 @@ def clone_forward(source_key: str, target: dict[str, Any], as_of: date) -> dict[
     out["structure"]["calendar"] = []
     out["structure"]["calendar_note"] = ""
     out.pop("notes", None)      # free-text notes no longer exist anywhere
-    return out
+    out.pop("score_baseline", None)
+    return roll_roster(out, source_key, src)
 
 
 # Seeded on every new meeting so the two-strikes rule has something to count.

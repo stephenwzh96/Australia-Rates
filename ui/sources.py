@@ -806,3 +806,53 @@ _EXTRA_CLEARS: list = []
 def register_refresh(fn) -> None:
     if fn not in _EXTRA_CLEARS:
         _EXTRA_CLEARS.append(fn)
+
+
+# ------------------------------------------------------------------ the Board
+
+@st.cache_data(ttl=60 * 60 * 6, show_spinner="Reading the Monetary Policy Board…")
+def fetch_board() -> list:
+    """The Board as rba.gov.au lists it today: name, seat, since, portrait."""
+    from data import rba_board
+    try:
+        return rba_board.members()
+    except Exception:                                           # noqa: BLE001
+        return []
+
+
+@st.cache_data(ttl=60 * 60 * 24 * 7, show_spinner="Fetching Board portraits…")
+def fetch_board_avatars(names: tuple[str, ...]) -> dict[str, str]:
+    import base64
+
+    from data import rba_board
+    try:
+        pngs = rba_board.photos(names)
+    except Exception:                                           # noqa: BLE001
+        return {}
+    return {name: "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+            for name, png in pngs.items()}
+
+
+@st.cache_data(ttl=60 * 60 * 6, show_spinner="Reading the Board's decision statements…")
+def fetch_board_votes(today: date) -> list:
+    """Every Monetary Policy Board decision to `today` with its published,
+    unattributed vote split."""
+    from data import rba_decisions
+    try:
+        return rba_decisions.history(today)
+    except Exception:                                           # noqa: BLE001
+        return []
+
+
+for _fn in (fetch_board, fetch_board_avatars, fetch_board_votes):
+    register_refresh(_fn.clear)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Reading the Statement on Monetary Policy…")
+def fetch_smp_rounds(as_of: date, released: tuple) -> list:
+    """The latest two Statement forecast rounds published before `as_of`."""
+    from data import rba_smp
+    return rba_smp.rounds_before(as_of, 2, dict(released))
+
+
+register_refresh(fetch_smp_rounds.clear)
