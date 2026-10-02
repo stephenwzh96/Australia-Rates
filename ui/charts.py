@@ -24,6 +24,7 @@ import altair as alt
 import pandas as pd
 import plotly.graph_objects as go
 
+from core import cpi_monthly as cpi_monthly_mod
 from core import labor
 from core import path as pathmod
 from core import pricing, sizing
@@ -2886,3 +2887,489 @@ def wpi_heatmap_table(wpi: dict, shares: dict, p: Palette) -> str:
     return ("<table class='fomc-heatmap'><thead><tr><th class='sh'>share of jobs</th>"
             f"<th class='nm'>Industry</th>{head}</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table>{legend}")
+
+
+# ---------------------------------------------------------------------------
+# Inflation: trend, breadth windows, dispersion, breakdown, drivers (from the US)
+# ---------------------------------------------------------------------------
+
+
+
+def inflation_trend(series_list, p: Palette, height: int = 420,
+                    window_start: date | None = None,
+                    vintages: "dict[str, Vintage] | None" = None) -> list[go.Figure]:
+    """Sequential underlying inflation trend -- the monthly CPI beside the
+    quarterly CPI, as the US pairs CPI with PCE. Each panel draws its own
+    target pace: 2.5% a year (the band's midpoint) in that panel's period."""
+    palette_cols = [p.ink_secondary, p.positive, p.negative, p.accent,
+                    p.muted, p.critical, p.warning]
+
+    figs: list[go.Figure] = []
+    for panel, title in (("Monthly", "Monthly CPI — month-over-month % change"),
+                         ("Quarterly", "Quarterly CPI — quarter-on-quarter % change")):
+        start = {"Monthly": date(2024, 4, 1), "Quarterly": date(1982, 1, 1)}[panel]
+        per_year = 12 if panel == "Monthly" else 4
+        target = cpi_monthly_mod.target_pace(per_year)
+        cutoff = start if window_start is None else max(start, window_start)
+        panel_series = [s for s in series_list if s.panel == panel]
+
+        rows = []
+        for s in panel_series:
+            for d, v in s.observations:
+                if d >= cutoff:
+                    rows.append({"date": d, "value": v, "series": s.label})
+        vintage = (vintages or {}).get(panel)
+        fig = go.Figure()
+        if not rows:
+            fig.add_annotation(text=f"No {panel} data", showarrow=False,
+                               font=dict(color=p.ink))
+            figs.append(fig)
+            continue
+
+        df = pd.DataFrame(rows)
+        # The range spans EVERY series, including the ones that start hidden.
+        # A fixed range is not recomputed when the legend toggles a trace on,
+        # so scoping it to the default-visible lines would clip a measure the
+        # moment someone switched it on. On this data the Fed's alternative
+        # measures sit inside the headline/core envelope in every history
+        # window, so the default view gives up nothing by covering them.
+        y_min = math.floor((df["value"].min() - 0.1) * 10) / 10
+        y_max = math.ceil((df["value"].max() + 0.1) * 10) / 10
+
+        series_names = sorted(df["series"].unique())
+        colour = {name: palette_cols[i % len(palette_cols)]
+                  for i, name in enumerate(series_names)}
+
+        min_date, max_date = df["date"].min(), df["date"].max()
+
+        for s in panel_series:
+            obs = [(d, v) for d, v in s.observations if d >= cutoff]
+            if not obs:
+                continue
+            # Only the headline/core measures are drawn by default. The Fed's
+            # alternative measures stay in the legend but start switched off,
+            # so the default view is four readable lines rather than seven
+            # that overlap across the whole history. "legendonly" keeps them
+            # out of the unified hover box as well as out of the plot.
+            fig.add_trace(go.Scatter(
+                x=[d for d, _ in obs],
+                y=[v for _, v in obs],
+                name=s.label, mode="lines",
+                visible=(True if s.headline else "legendonly"),
+                # Straight segments: a spline through monthly prints overshoots
+                # them and draws readings that never printed.
+                line=dict(width=1.8, color=colour[s.label]),
+                hovertemplate=f"{s.label}: %{{y:+.2f}}%<extra></extra>",
+            ))
+
+        fig.add_shape(type="line", xref="x", yref="y",
+                      x0=min_date, x1=max_date, y0=0, y1=0,
+                      line=dict(color=p.baseline, width=1))
+        # The pace that compounds to 2% a year -- the target, in the chart's
+        # own month-over-month units. Zero is no inflation, not the target.
+        fig.add_shape(type="line", xref="x", yref="y",
+                      x0=min_date, x1=max_date, y0=target, y1=target,
+                      line=dict(color=p.muted, width=1, dash="dash"))
+        unit = "m/m" if per_year == 12 else "q/q"
+        fig.add_annotation(x=max_date, y=target, xanchor="right", yanchor="bottom",
+                           text=f"2.5% a year ({target:.2f}% {unit})", showarrow=False,
+                           font=dict(size=10, color=p.muted))
+
+        # Legend names include the traces that start hidden: a "legendonly"
+        # trace is absent from the plot but still occupies legend width, so it
+        # has to be counted when sizing the bottom margin.
+        legend, legend_margin = bottom_legend(series_names)
+        fig.update_layout(
+            height=height,
+            title=dict(text=title, x=0.0, xanchor="left", font=title_font(p)),
+            paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+            font=dict(color=p.ink, size=12),
+            margin=dict(l=56, r=16, t=46, b=legend_margin),
+            showlegend=True,
+            legend=legend,
+            hovermode="x unified",
+        )
+        fig.update_yaxes(title=dict(text="% change, month ago" if per_year == 12
+                                    else "% change, quarter ago"),
+                         range=[y_min, y_max], gridcolor=p.grid,
+                         zeroline=False, tickformat=".1f")
+        fig.update_xaxes(type="date", tickformat="%b %Y" if per_year == 12 else "%Y",
+                         hoverformat="%b %Y",
+                         gridcolor=p.grid, range=[min_date, max_date])
+        figs.append(apply_vintage(fig, vintage, p))
+
+    return figs
+
+
+def cpi_breadth_windows(series_by_window, p: Palette, height: int = 430,
+                norm: float | None = None,
+                window_start: date | None = None,
+                threshold: float = 3.0,
+                vintage: "Vintage | None" = None) -> go.Figure:
+    """Breadth of CPI inflation -- what share of the basket is running hot.
+    The US chart's 12-month and 6-month-annualised windows, on the quarterly
+    expenditure classes: four quarters and two quarters annualised."""
+    colour = {12: p.positive, 6: p.critical}
+    dash = {12: None, 6: "dot"}
+    label = {12: "Year-ended", 6: "Two quarters, annualised"}
+
+    fig = go.Figure()
+    windows = sorted(series_by_window, reverse=True)
+    trimmed = {w: [(d, v) for d, v in series_by_window.get(w, [])
+                   if window_start is None or d >= window_start]
+               for w in windows}
+    live = [w for w in windows if trimmed[w]]
+
+    if not live:
+        fig.add_annotation(text="No breadth data", showarrow=False,
+                           font=dict(color=p.ink))
+        fig.update_layout(height=height, paper_bgcolor=p.surface,
+                          plot_bgcolor=p.plane)
+        return fig
+
+    all_dates = [d for w in live for d, _ in trimmed[w]]
+    min_date, max_date = min(all_dates), max(all_dates)
+
+    if norm is not None:
+        fig.add_shape(type="line", xref="x", yref="y",
+                      x0=min_date, x1=max_date, y0=norm, y1=norm,
+                      line=dict(color=p.muted, width=1, dash="dash"))
+        fig.add_annotation(
+            x=min_date, y=norm, xref="x", yref="y",
+            text=f"1993-2019 average · {norm:.0f}%",
+            showarrow=False, xanchor="left", yanchor="bottom",
+            font=dict(size=11, color=p.muted))
+
+    for w in live:
+        obs = trimmed[w]
+        fig.add_trace(go.Scatter(
+            x=[d for d, _ in obs], y=[v for _, v in obs],
+            name=label.get(w, f"{w}-month"), mode="lines",
+            line=dict(width=2.0 if w == 12 else 1.6, color=colour.get(w, p.ink),
+                      dash=dash.get(w)),
+            hovertemplate=(f"{label.get(w, str(w))}: "
+                           "%{y:.0f}% of the basket<extra></extra>"),
+        ))
+        last_d, last_v = obs[-1]
+        fig.add_trace(go.Scatter(
+            x=[last_d], y=[last_v], mode="markers+text",
+            marker=dict(size=7, color=colour.get(w, p.ink)),
+            text=[f" {last_v:.0f}%"], textposition="middle right",
+            textfont=dict(size=12, color=colour.get(w, p.ink)),
+            showlegend=False, hoverinfo="skip", cliponaxis=False,
+        ))
+
+    legend_names = [label.get(w, f"{w}-month") for w in live]
+    legend, legend_margin = bottom_legend(legend_names)
+    fig.update_layout(
+        height=height,
+        title=dict(text=f"Share of the CPI basket rising faster than "
+                        f"{threshold:g}% a year",
+                   x=0.0, xanchor="left", font=title_font(p)),
+        paper_bgcolor=p.surface, plot_bgcolor=p.plane,
+        font=dict(color=p.ink, size=12),
+        margin=dict(l=56, r=64, t=46, b=legend_margin),
+        showlegend=True,
+        legend=legend,
+        hovermode="x unified",
+    )
+    fig.update_yaxes(title=dict(text="% of basket"), range=[0, 100],
+                     gridcolor=p.grid, zeroline=False, ticksuffix="%",
+                     dtick=25)
+    xfmt, xticks = _gs_time_format(all_dates)
+    fig.update_xaxes(type="date", tickformat=xfmt, nticks=xticks,
+                     hoverformat="%b %Y",
+                     gridcolor=p.grid, range=[min_date, max_date])
+    return apply_vintage(fig, vintage, p)
+
+
+_DISP_SHAPES = ("circle", "triangle-up", "diamond")
+
+# Mark area in square pixels, one per regime, oldest first. The history is a
+# backdrop and stays small; the surge and the current regime are what the eye is
+# meant to find, and a triangle or a diamond reads smaller than a circle of the
+# same area because so much of its bounding box is empty.
+_DISP_SIZES = (34, 78, 104)
+
+# Sample count for each era's fitted curve. Enough that the bend reads as a
+# curve rather than a polyline at any panel width.
+_DISP_FIT_STEPS = 48
+
+
+def _dispersion_colours(p: Palette) -> list[str]:
+    """One colour per regime, oldest first: history, the surge, now."""
+    return [p.muted, p.warning, p.negative]
+
+
+def cpi_dispersion(disp, p: Palette,
+                   label_months: int = 5, height: int = 460) -> alt.LayerChart:
+    """The CPI inflation dispersion scatter, one point per quarter."""
+    colours = _dispersion_colours(p)
+    labels = [r.label for r in disp.regimes]
+
+    pts, lines = [], []
+    for i, reg in enumerate(disp.regimes):
+        for pt in reg.points:
+            pts.append({
+                "regime": reg.label, "share": pt.share, "mom": pt.mom_pct,
+                "month": pt.month.strftime("%b %Y"),
+                "n": pt.n_categories, "coverage": pt.coverage,
+            })
+        if reg.fit is not None:
+            # The trend is linear in log-odds of the share, so it draws as a
+            # curve: sample it across the era's own range rather than joining
+            # the two endpoints, which would straighten out the whole point.
+            lo = min(q.share for q in reg.points)
+            hi = max(q.share for q in reg.points)
+            step = (hi - lo) / (_DISP_FIT_STEPS - 1) if hi > lo else 0.0
+            for k in range(_DISP_FIT_STEPS):
+                x = lo + step * k
+                lines.append({"regime": reg.label, "share": x,
+                              "mom": reg.fit.at(x)})
+    if not pts:
+        return alt.LayerChart()
+
+    df = pd.DataFrame(pts)
+    colour = alt.Color("regime:N",
+                       scale=alt.Scale(domain=labels, range=colours),
+                       legend=alt.Legend(title=None, orient="top", direction="horizontal",
+                                         symbolType="circle", columns=3))
+    shape = alt.Shape("regime:N",
+                      scale=alt.Scale(domain=labels, range=list(_DISP_SHAPES)),
+                      legend=None)
+    size = alt.Size("regime:N",
+                    scale=alt.Scale(domain=labels, range=list(_DISP_SIZES)),
+                    legend=None)
+    # Both axes are already in percent units, so the label carries the sign
+    # rather than a d3 percent format (which would multiply by 100 again).
+    x_enc = alt.X("share:Q", scale=alt.Scale(domain=[0, 100]),
+                  axis=alt.Axis(title="Share of the basket with relative price "
+                                      "increases (> CPI inflation)",
+                                values=[0, 20, 40, 60, 80, 100],
+                                labelExpr="datum.value + '%'"))
+    y_enc = alt.Y("mom:Q", axis=alt.Axis(title="Q/Q percent change", tickMinStep=0.2,
+                                         labelExpr="format(datum.value, '.1f') + '%'"))
+    tooltip = [alt.Tooltip("month:N", title="quarter"),
+               alt.Tooltip("regime:N", title="era"),
+               alt.Tooltip("mom:Q", title="q/q %", format=".2f"),
+               alt.Tooltip("share:Q", title="share above", format=".0f"),
+               alt.Tooltip("n:Q", title="classes"),
+               alt.Tooltip("coverage:Q", title="basket covered %", format=".0f")]
+
+    # The source draws the history as open circles and the two recent eras
+    # filled, which is what lets a handful of coloured marks read against three
+    # hundred grey ones. That needs two layers -- `filled` is a mark property,
+    # not something an encoding can vary per point.
+    history, recent = labels[0], labels[1:]
+    layers = [
+        alt.Chart(pd.DataFrame({"y": [0.0]})).mark_rule(
+            color=p.baseline, strokeWidth=1).encode(y="y:Q"),
+        alt.Chart(df[df["regime"] == history]).mark_point(
+            filled=False, strokeWidth=1.1, opacity=0.55).encode(
+            x=x_enc, y=y_enc, color=colour, shape=shape, size=size, tooltip=tooltip),
+        alt.Chart(df[df["regime"].isin(recent)]).mark_point(
+            filled=True, opacity=0.85).encode(
+            x=x_enc, y=y_enc,
+            color=alt.Color("regime:N", scale=alt.Scale(domain=labels, range=colours),
+                            legend=None),
+            shape=shape, size=size, tooltip=tooltip),
+    ]
+    if lines:
+        layers.append(
+            alt.Chart(pd.DataFrame(lines)).mark_line(
+                strokeWidth=1.6, strokeDash=[5, 3], interpolate="basis").encode(
+                x="share:Q", y="mom:Q",
+                color=alt.Color("regime:N",
+                                scale=alt.Scale(domain=labels, range=colours),
+                                legend=None)))
+
+    current = disp.regimes[-1].points[-label_months:] if disp.regimes[-1].points else ()
+    if current:
+        ldf = pd.DataFrame([{"share": q.share, "mom": q.mom_pct,
+                             "tag": q.month.strftime("%b '%y")} for q in current])
+        # The newest month is the one the eye is hunting for on a scatter of
+        # three hundred marks. Its own diamond is redrawn in the blue at the
+        # era's size, on top of the era's red ones, so the mark the label
+        # belongs to is findable even when the text itself is lost in the
+        # grey cloud of history.
+        layers.append(alt.Chart(pd.DataFrame([{"share": current[-1].share,
+                                               "mom": current[-1].mom_pct}])
+                                ).mark_point(filled=True, shape="diamond",
+                                             size=_DISP_SIZES[-1],
+                                             color=p.positive,
+                                             opacity=1.0).encode(
+            x="share:Q", y="mom:Q"))
+        # Then the tags: the older four in the era red, the newest in the same
+        # blue, bold, and drawn last so it sits on top.
+        older, latest = ldf.iloc[:-1], ldf.iloc[-1:]
+        if not older.empty:
+            layers.append(alt.Chart(older).mark_text(
+                align="left", dx=7, dy=-5, fontSize=9, fontWeight=600,
+                color=p.negative).encode(x="share:Q", y="mom:Q", text="tag:N"))
+        layers.append(alt.Chart(latest).mark_text(
+            align="left", dx=7, dy=-5, fontSize=9, fontWeight="bold",
+            color=p.positive).encode(x="share:Q", y="mom:Q", text="tag:N"))
+
+    return _apply(alt.layer(*layers), p, height)
+
+
+_CPI_HOT = "#a32a25"      # saturated +, sampled from the source's energy block
+_CPI_COLD = "#4d86bf"     # saturated -, sampled from the source's motor-fuel dips
+
+_CPI_CAP = 3.0
+
+_CPI_GAMMA = 0.65
+
+
+def _cpi_heat(value: float, p: Palette) -> str:
+    """Signed value -> cell fill, blended out of the theme's own surface."""
+    t = min(1.0, abs(value) / _CPI_CAP) ** _CPI_GAMMA
+    return _lerp_hex(p.surface, _CPI_HOT if value >= 0 else _CPI_COLD, t)
+
+
+def cpi_breakdown_table(table, p: Palette,
+                        vintage: "Vintage | None" = None) -> str:
+    """The CPI breakdown monitor as HTML, matching the source's layout."""
+    if table.empty:
+        return ""
+
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    head = "".join(f"<th class='c'>{d.month}/{d.year}</th>" for d in table.months)
+
+    body: list[str] = []
+    for br in table.rows:
+        cells: list[str] = []
+        for i, d in enumerate(table.months):
+            v = br.values[i]
+            if v is None:
+                cells.append("<td class='c na'>&mdash;</td>")
+                continue
+            fill = _cpi_heat(v, p)
+            ink = _readable_ink(fill)
+            basis = ("seasonally adjusted" if br.row.basis == "SA" else
+                     "original (the ABS adjusts no series for this item)")
+            tip = (f"{esc(br.row.label)} · {d:%b %Y}: {v:+.3f}% m/m · "
+                   f"weight {br.row.weight:.1f} · {basis} · {br.row.item}")
+            cells.append(f"<td class='c' title='{tip}' "
+                         f"style='background:{fill};color:{ink}'>{v:.3f}</td>")
+        body.append(
+            f"<tr class='l{br.row.level}'>"
+            f"<td class='nm'>{esc(br.label)}</td>"
+            f"<td class='w'>{br.row.weight:.1f}</td>"
+            f"{''.join(cells)}</tr>")
+
+    meta = []
+    if vintage and vintage.next_release:
+        meta.append(f"Next release: {vintage.next_release:%d %b %Y}")
+    if vintage and vintage.last_modified:
+        meta.append(f"Last modified: {vintage.last_modified:%d %b %Y}")
+
+    stops = "".join(
+        f"<span class='g' style='background:{_cpi_heat(v, p)}'></span>"
+        for v in (-_CPI_CAP + i * (2 * _CPI_CAP / 24) for i in range(25)))
+    key = (f"<div class='fomc-heatmap-legend'>"
+           f"<span class='gl'>&minus;{_CPI_CAP:.0f}pp</span>{stops}"
+           f"<span class='gl'>+{_CPI_CAP:.0f}pp</span>"
+           f"<span class='gt'>&nbsp;· m/m % change, one shared scale, "
+           f"saturating beyond ±{_CPI_CAP:.0f}pp</span></div>")
+
+    navy = "#93b7e4" if p.mode == "dark" else "#1f3b66"
+    return (
+        f"<div class='fomc-cpi-head' style='color:{navy}'>"
+        f"Australian CPI Breakdowns: m/m % change</div>"
+        + "".join(f"<div class='fomc-cpi-meta' style='color:{navy}'>{esc(m)}</div>"
+                  for m in meta)
+        + f"<div class='fomc-scroll'><table class='fomc-cpi'>"
+          f"<thead><tr><th class='nm'></th><th class='w'>Weights</th>"
+          f"{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+        + key)
+
+
+def inflation_expectations(lines, p: Palette, height: int = 440,
+                                     window_start: date | None = None,
+                                     vintage: "Vintage | None" = None) -> go.Figure:
+    """Melbourne Institute consumers (1 year), market economists (2 year) and
+    the 10-year bond break-even, from RBA table G3."""
+    colours, pale_ink = _driver_colours(p)
+    fig = go.Figure()
+    trimmed, live = _trim_lines(lines, window_start)
+    if not live:
+        return _consumer_empty(fig, "No inflation expectations data", p, height)
+
+    hover_name = {"consumer_1y": "Consumers, 1-yr", "market_2y": "Market economists, 2-yr",
+                  "breakeven_10y": "10-yr break-even"}
+    colours = {"consumer_1y": colours["point_3y"], "market_2y": colours["density_3y"],
+               "breakeven_10y": colours["umich_5_10"]}
+    for ln in live:
+        obs = trimmed[ln.key]
+        fig.add_trace(go.Scatter(
+            x=[o.date for o in obs], y=[o.value for o in obs], name=ln.label, mode="lines",
+            line=dict(width=2.6, color=colours[ln.key]),
+            hovertemplate=f"{hover_name[ln.key]}: %{{y:.2f}}%<extra></extra>"))
+
+    ink = {"consumer_1y": pale_ink, "market_2y": colours["market_2y"],
+           "breakeven_10y": colours["breakeven_10y"]}
+    subtitle = ("<i>1 year ahead from</i> "
+                f"{_named('consumers (Melbourne Institute)', ink['consumer_1y'])}, "
+                f"<i>2 years from</i><br>{_named('market economists', ink['market_2y'])}"
+                f"<i>, and the</i> {_named('10-year bond break-even', ink['breakeven_10y'])}")
+    latest = max(trimmed[ln.key][-1].date for ln in live)
+    bottom = _footer(fig, [f"Latest data: {_q_label(latest)}  ·  Source: RBA table G3, "
+                           "Melbourne Institute",
+                           vintage.line if vintage else ""], p)
+    dates = [o.date for ln in live for o in trimmed[ln.key]]
+    _monthly_frame(fig, p, height, dates,
+                   _driver_title("Inflation Expectations", subtitle, p),
+                   bottom, ".1f", right=_DRIVER_RIGHT, top=_DRIVER_TOP, zero_line=False,
+                   hoverformat="%Y Q%q", pad_days=45)
+    values = [o.value for ln in live for o in trimmed[ln.key]]
+    # The floor sits half a step under the lowest tick, so that tick's label
+    # clears the first year label in the shared corner.
+    fig.update_yaxes(dtick=0.5, range=[math.floor(min(values) * 2 - 0.5) / 2 - 0.25,
+                                       math.ceil(max(values) * 2 + 0.5) / 2])
+    return fig
+
+
+def _q_label(d: date) -> str:
+    return f"{d.year}q{(d.month - 1) // 3 + 1}"
+
+
+def wage_price_index(lines, p: Palette, height: int = 440,
+                          window_start: date | None = None,
+                          vintage: "Vintage | None" = None) -> go.Figure:
+    """WPI: quarter-on-quarter change, total, private and public sector."""
+    colours, pale_ink = _driver_colours(p)
+    fig = go.Figure()
+    trimmed, live = _trim_lines(lines, window_start)
+    if not live:
+        return _consumer_empty(fig, "No Wage Price Index data", p, height)
+
+    colours = {"public": colours["benefits"], "private": colours["wages"],
+               "total": colours["total"]}
+    for ln in live:
+        obs = trimmed[ln.key]
+        fig.add_trace(go.Scatter(
+            x=[o.date for o in obs], y=[o.value for o in obs], name=ln.label, mode="lines",
+            line=dict(width=3.0 if ln.key == "total" else 2.4, color=colours[ln.key]),
+            hovertemplate=f"{ln.label}: %{{y:.2f}}%<extra></extra>"))
+
+    subtitle = ("<i>Q/Q percent change, hourly rates excluding bonuses, for</i><br>"
+                f"{_named('All sectors', colours['total'])}, "
+                f"{_named('Private', colours['private'])}, <i>and</i> "
+                f"{_named('Public', pale_ink)}")
+    latest = max(trimmed[ln.key][-1].date for ln in live)
+    bottom = _footer(fig, [f"Latest data: {_q_label(latest)}  ·  Seasonally adjusted"
+                           "  ·  Source: ABS via RBA table H4",
+                           vintage.line if vintage else ""], p)
+    dates = [o.date for ln in live for o in trimmed[ln.key]]
+    _monthly_frame(fig, p, height, dates,
+                   _driver_title("Wage Price Index", subtitle, p),
+                   bottom, ".1f", right=_DRIVER_RIGHT, top=_DRIVER_TOP, zero_line=False,
+                   hoverformat="%Y Q%q", pad_days=45)
+    values = [o.value for ln in live for o in trimmed[ln.key]]
+    fig.update_yaxes(dtick=0.2, range=[min(0.0, math.floor(min(values) * 5) / 5) - 0.1,
+                                       math.ceil(max(values) * 5 + 0.5) / 5])
+    return fig

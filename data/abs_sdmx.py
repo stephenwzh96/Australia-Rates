@@ -195,6 +195,54 @@ def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
     return got
 
 
+STRUCTURE = "https://data.api.abs.gov.au/rest/dataflow/ABS/{flow}/{version}"
+
+
+def codelist(flow: str, version: str, codelist_id: str,
+             max_age_days: int = 30) -> list[tuple[str, str, str]]:
+    """One codelist of a dataflow as (code, English name, parent code or "").
+
+    The CPI's item tree (group -> sub-group -> class) is read from here rather
+    than typed in, so an ABS reclassification lands without a code change.
+    Cached on disk; a failed fetch serves the last good copy."""
+    import re
+    ckey = f"abs-sdmx-codelist-{flow}-{version}-{codelist_id}"
+    cached = cache.read_json(ckey)
+    stamp = next((r.get("fetched") for r in cached if "fetched" in r), None)
+    rows = [(r["c"], r["n"], r.get("p", "")) for r in cached if "c" in r]
+    if stamp and rows:
+        try:
+            if (datetime.now(timezone.utc).date() - date.fromisoformat(stamp)).days < max_age_days:
+                return rows
+        except ValueError:
+            pass
+    try:
+        r = requests.get(STRUCTURE.format(flow=flow, version=version),
+                         params={"references": "all"},
+                         headers={**HEADERS,
+                                  "Accept": "application/vnd.sdmx.structure+xml;version=2.1"},
+                         timeout=TIMEOUT)
+        if r.status_code != 200:
+            return rows
+        block = re.search(rf'<structure:Codelist[^>]*id="{re.escape(codelist_id)}".*?'
+                          r"</structure:Codelist>", r.text, re.S)
+        if not block:
+            return rows
+        got = []
+        for code, body in re.findall(r'<structure:Code id="([^"]+)"[^>]*>(.*?)</structure:Code>',
+                                     block.group(0), re.S):
+            name = re.search(r'<common:Name xml:lang="en">([^<]+)</common:Name>', body)
+            parent = re.search(r'<structure:Parent>.*?id="([^"]+)"', body, re.S)
+            got.append((code, name.group(1) if name else code, parent.group(1) if parent else ""))
+    except requests.RequestException:
+        return rows
+    if got:
+        cache.write_json(ckey, [{"fetched": datetime.now(timezone.utc).date().isoformat()}]
+                         + [{"c": c, "n": n, "p": p} for c, n, p in got])
+        return got
+    return rows
+
+
 def series_pairs(indicator_key: str) -> list[tuple[date, float]]:
     return [(o.date, o.value) for o in series(indicator_key)]
 

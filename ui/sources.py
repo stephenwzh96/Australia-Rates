@@ -600,6 +600,37 @@ def cpi_series() -> dict:
     }
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the monthly CPI…")
+def fetch_cpi_monthly() -> dict[str, list[tuple[date, float]]]:
+    """The complete monthly CPI (ABS data API `CPI` v2.0.0), keyed
+    "measure|index|tsest": index levels, % changes and contributions for every
+    item in the tree, original and (where the ABS adjusts) seasonally adjusted."""
+    raw = abs_sdmx.panel("CPI,2.0.0", "1+2+3+6+7...50.M", ("MEASURE", "INDEX", "TSEST"),
+                         start="2024-01")
+    return {k: [(o.date, o.value) for o in v] for k, v in raw.items()}
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def cpi_tree():
+    """The CPI expenditure tree, from the ABS's own codelist."""
+    from core import cpi_monthly
+    return cpi_monthly.tree(abs_sdmx.codelist("CPI", "2.0.0", "CL_CPI_INDEX"))
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def cpi_weights() -> dict[str, float]:
+    """Each CPI item's basket weight (%), the latest annual reweight."""
+    raw = abs_sdmx.panel("CPI_WEIGHTS,1.0.0", "1..50.Q", ("INDEX",), start="2020")
+    return {k: v[-1].value for k, v in raw.items() if v}
+
+
+def cpi_monthly_vintage() -> date | None:
+    """The newest month the monthly CPI prints, as a vintage stamp."""
+    panel = fetch_cpi_monthly()
+    rows = panel.get("1|10001|10") or []
+    return rows[-1][0] if rows else None
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def cpi_classification() -> tuple[list, list]:
     """The two editable analytical splits, off disk."""

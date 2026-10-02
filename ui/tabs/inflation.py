@@ -23,7 +23,7 @@ def render(ctx: Ctx) -> None:
         C.section("Sequential underlying inflation trend",
                   "month-over-month % change · dashed line = the 2.5% annual pace")
     with ctl:
-        window = C.history_window("inflation_window", default="10Y",
+        window = C.history_window("inflation_window",
                                   help="Scopes the trend, breadth, composition and underlying "
                                        "charts.")
     start = C.window_start(window, ctx.as_of)
@@ -40,41 +40,40 @@ def render(ctx: Ctx) -> None:
         with breadth_col:
             _breadth(ctx, cpi, start, vintage)
         with disp_col:
-            panels.dispersion(ctx)
+            panels.dispersion_panel(ctx)
         panels.contributions(ctx, start)
         _basket(ctx, cpi, start, vintage)
-    panels.drivers(ctx)
+    panels.drivers_panel(ctx)
 
 
 def _breadth(ctx: Ctx, cpi: dict, start, vintage) -> None:
     P = ctx.P
     C.heading("Breadth of CPI inflation", "share of the basket rising faster than the threshold",
-              help=(r"\text{breadth} = \frac{\sum_{i\,:\,\pi_i > k} w_i}{\sum_i w_i}",
-                    "How much of the basket is moving, not how fast the headline moved. "
-                    "Counted two ways over the ABS's expenditure classes: every class equal, "
-                    "and each carrying its own CPI weight. Quarterly changes compounded to an "
-                    "annual pace, so a class sits above or below a fixed threshold.",
-                    "see core.inflation.breadth", "breadth"))
+              help=("", "How much of the basket is moving, not how fast the headline moved: a "
+                        "headline pulled up by a few classes reads very differently from one "
+                        "where most prices are rising. The 87 expenditure classes are counted "
+                        "equally, over four quarters and over two quarters annualised — the US "
+                        "chart's 12-month and 6-month windows at a quarterly cadence.", "",
+                    "breadth"))
     threshold = C.choice("Threshold", (2.5, 3.0, 4.0), default=3.0,
                          format_func=lambda v: f"above {v:g}% annualised",
                          key="breadth_threshold", label_visibility="collapsed")
-    pts = infl.breadth(cpi["classes"], cpi["weights"], float(threshold), 1,
-                       int(0.8 * len(cpi["leaves"])))
-    st.altair_chart(charts.cpi_above_threshold(pts, P, float(threshold), start, vintage),
-                    width="stretch", theme=None)
-    C.legend([("By number of items", P.categorical[0]),
-              ("By weight of price categories", P.categorical[1])])
-    if pts:
-        last = pts[-1]
-        norm = infl.mean_over([(p.when, p.share_by_weight) for p in pts],
-                              date(1993, 1, 1), date(2019, 12, 31))
-        top = max((p for p in pts if p.when >= date(2020, 1, 1)),
-                  key=lambda p: p.share_by_weight, default=None)
-        C.stat_row([("By weight", f"{last.share_by_weight:.0f}%", None),
-                    ("By count", f"{last.share_by_count:.0f}%", None),
+    min_live = int(0.8 * len(cpi["leaves"]))
+    windows = {w: [(pt.when, pt.share_by_count)
+                   for pt in infl.breadth(cpi["classes"], cpi["weights"], float(threshold), q,
+                                          min_live) if pt.when <= ctx.as_of]
+               for w, q in ((12, 4), (6, 2))}
+    norm = infl.mean_over(windows[12], date(1993, 1, 1), date(2019, 12, 31))
+    st.plotly_chart(charts.cpi_breadth_windows(windows, P, norm=norm, window_start=start,
+                                               threshold=float(threshold), vintage=vintage),
+                    width="stretch")
+    y, h = windows[12], windows[6]
+    top = max(((d, v) for d, v in y if d >= date(2020, 1, 1)), key=lambda t: t[1], default=None)
+    if y and h:
+        C.stat_row([("Year-ended", f"{y[-1][1]:.0f}%", None),
+                    ("2 quarters a.r.", f"{h[-1][1]:.0f}%", None),
                     ("1993–2019 avg", f"{norm:.0f}%" if norm is not None else "—", None),
-                    ("Post-2020 peak", f"{top.share_by_weight:.0f}% ({top.when:%b %Y})"
-                     if top else "—", None)])
+                    ("Post-2020 peak", f"{top[1]:.0f}% ({top[0]:%b %Y})" if top else "—", None)])
 
 
 def _basket(ctx: Ctx, cpi: dict, start, vintage) -> None:
@@ -137,6 +136,21 @@ def _basket(ctx: Ctx, cpi: dict, start, vintage) -> None:
                             theme=None)
             C.legend([(f"'Cyclical' — {split.n_cyclical} classes", P.categorical[0]),
                       (f"'Non-cyclical' — {split.n_non_cyclical} classes", P.categorical[1])])
+    r3a, r3b = st.columns(2, gap="medium")
+    with r3a:
+        pts = [pt for pt in infl.breadth(classes, weights, infl.ABOVE_BAND, 1,
+                                         int(0.8 * len(cpi["leaves"]))) if pt.when <= ctx.as_of]
+        st.altair_chart(charts.cpi_above_threshold(pts, P, infl.ABOVE_BAND, start, vintage),
+                        width="stretch", theme=None)
+        C.legend([("By number of items", P.categorical[0]),
+                  ("By weight of price categories", P.categorical[1])])
+    with r3b:
+        C.note("**What is a judgement here, and what is not.** The breadth counts and the "
+               "underlying measures are arithmetic — a threshold, a count, a weight, and the "
+               "ABS's own trim. The composition buckets and the cyclical split are not "
+               "published series: they are analytical classifications, different houses draw "
+               "them differently, and they live in meetings/_cpi_classification.json as data "
+               "you can edit.")
     C.note("Quarterly series are seasonally adjusted (ABS Appendix 1a); the monthly measures "
            "start where the complete monthly CPI does. The breadth-vs-trimmed-mean chart is two "
            "stacked panels rather than a dual axis, where crossings would be an artefact of "
