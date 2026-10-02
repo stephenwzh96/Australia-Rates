@@ -1441,3 +1441,153 @@ def labour_flows(series: dict[str, list[tuple[date, float]]], order: list[str],
         .properties(title=vintage_title(
             "Job-finding and job-switching against wage growth", vintage, p)),
         p, height)
+
+
+# ---------------------------------------------------------------------------
+# Macro dashboard  (Westpac CIO "Australian Macroeconomic Indicators")
+# ---------------------------------------------------------------------------
+# One fixed colour per group, reused by the dot table and the momentum bars so
+# a group reads the same in both. Blue->red is the app's diverging pair; the
+# other three are desaturated neutrals so the eye groups by row block, not hue.
+MACRO_GROUP_ORDER = ("Labour Market", "Inflation", "Housing", "Consumer",
+                     "Cyclical Economic Indicators")
+
+
+def _macro_group_colours(p: Palette) -> dict[str, str]:
+    return {
+        "Labour Market": p.positive,
+        "Inflation": p.negative,
+        "Housing": p.accent,
+        "Consumer": p.warning,
+        "Cyclical Economic Indicators": p.ink_secondary,
+    }
+
+
+def _hex_rgb(h: str) -> tuple[float, float, float]:
+    """`#rrggbb` -> (r, g, b) in 0..1. Used by app.py's heat-shaded Z cell."""
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _macro_time_format(dates: list[date]) -> tuple[str, int]:
+    if not dates:
+        return "%Y", 6
+    return ("%b %Y", 8) if (max(dates) - min(dates)).days <= 3 * 366 else ("%Y", 6)
+
+
+def macro_dots(readings, p: Palette, height: int = 560) -> alt.LayerChart:
+    """The 'Australian Macroeconomic Indicators' dot plot: every indicator as a
+    z-score of its own 2000-2020 momentum distribution, on one axis.
+
+    A dumbbell per row where a live series carries history: the faint dot is the
+    score three and six months ago, the filled dot is now, the rule between is
+    the travel. A seed row has only the filled dot. Zero is the only reference
+    the axis has -- a z of 0 is average momentum for that series. Colour is the
+    sign of the current score (blue = stronger than average, red = weaker);
+    rows run top-to-bottom in the slide's order.
+    """
+    rows, seg, order = [], [], []
+    for r in readings:
+        if not r.ok:
+            continue
+        lbl = r.indicator.label
+        order.append(lbl)
+        rows.append({
+            "label": lbl, "group": r.indicator.group, "z": r.z,
+            "sign": "up" if r.z >= 0 else "down",
+            "last": r.last, "mean": r.hist_mean,
+            "as_of": r.as_of.isoformat() if r.as_of else "",
+            "kind": "live" if r.live else "seed",
+        })
+        z3, z6 = r.z_prev
+        if z3 is not None:
+            seg.append({"label": lbl, "z": z6 if z6 is not None else z3,
+                        "z2": r.z, "sign": rows[-1]["sign"]})
+    if not rows:
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()),
+                      p, height)
+    df, sdf = pd.DataFrame(rows), pd.DataFrame(seg)
+
+    dom = max(2.5, min(4.5, float(df["z"].abs().max()) + 0.3))
+    x_scale = alt.Scale(domain=[-dom, dom])
+    sign_scale = alt.Scale(domain=["up", "down"], range=[p.positive, p.negative])
+    y_enc = alt.Y("label:N", sort=order, axis=alt.Axis(
+        title=None, labelFontSize=10, labelLimit=240, grid=True, ticks=False,
+        domain=False))
+    x_enc = alt.X("z:Q", scale=x_scale, axis=alt.Axis(
+        title="z-score of 2000\u20132020 momentum   \u2014   weaker \u2190 \u2192 stronger",
+        values=[-3, -2, -1, 0, 1, 2, 3]))
+
+    layers = [alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
+        color=p.baseline, strokeWidth=1).encode(x="x:Q")]
+    if not sdf.empty:
+        layers.append(alt.Chart(sdf).mark_rule(strokeWidth=2, opacity=0.4).encode(
+            y=y_enc, x=alt.X("z:Q", scale=x_scale, title=None), x2="z2:Q",
+            color=alt.Color("sign:N", scale=sign_scale, legend=None)))
+        layers.append(alt.Chart(sdf).mark_point(
+            filled=True, size=40, color=p.surface, strokeWidth=1.4).encode(
+            y=y_enc, x=alt.X("z:Q", scale=x_scale, title=None),
+            stroke=alt.Color("sign:N", scale=sign_scale, legend=None)))
+    layers.append(alt.Chart(df).mark_point(
+        filled=True, size=95, stroke=p.surface, strokeWidth=1.4).encode(
+        y=y_enc, x=x_enc,
+        color=alt.Color("sign:N", scale=sign_scale, legend=None),
+        tooltip=[alt.Tooltip("label:N", title="indicator"),
+                 alt.Tooltip("group:N", title="group"),
+                 alt.Tooltip("z:Q", format="+.2f", title="z-score"),
+                 alt.Tooltip("last:Q", format=".2f", title="latest transform"),
+                 alt.Tooltip("mean:Q", format=".2f", title="2000\u20132020 mean"),
+                 alt.Tooltip("as_of:N", title="as of"),
+                 alt.Tooltip("kind:N", title="source")]))
+    return _apply(alt.layer(*layers), p, height)
+
+
+def macro_momentum(history, p: Palette, height: int = 340,
+                   window_start: "date | None" = None) -> alt.LayerChart:
+    """The 'Momentum Signal': each group's contribution to the Total as a
+    stacked bar per quarter, with the Total itself as a line on top.
+
+    The bars sum to the Total by construction -- each group contributes its
+    members' mean z times its share of the reporting count -- so the line is
+    never anything the stack does not already show; it is there so the aggregate
+    reads at a glance without adding the segments by eye. Built only from
+    indicators with a wired history, so a group with no free feed (Housing,
+    currently) sits the chart out.
+    """
+    gcol = _macro_group_colours(p)
+    rows, tot = [], []
+    for pt in history:
+        if window_start is not None and pt.month < window_start:
+            continue
+        for g, v in pt.contributions.items():
+            rows.append({"month": pt.month, "group": g, "contrib": v})
+        tot.append({"month": pt.month, "total": pt.total})
+    if not rows:
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_bar()),
+                      p, height)
+    df, tdf = pd.DataFrame(rows), pd.DataFrame(tot)
+
+    xfmt, xticks = _macro_time_format(list(tdf["month"]))
+    x_enc = alt.X("month:T", axis=alt.Axis(title=None, format=xfmt, tickCount=xticks))
+    present = [g for g in MACRO_GROUP_ORDER if g in set(df["group"])]
+    grp_scale = alt.Scale(domain=present, range=[gcol[g] for g in present])
+
+    zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+        color=p.baseline, strokeWidth=1).encode(y="y:Q")
+    bars = alt.Chart(df).mark_bar().encode(
+        x=x_enc,
+        y=alt.Y("contrib:Q", stack="zero",
+                axis=alt.Axis(title="group contribution to Total z", format="+.1f")),
+        color=alt.Color("group:N", scale=grp_scale,
+                        legend=alt.Legend(title=None, orient="bottom",
+                                          direction="horizontal", labelFontSize=10)),
+        order=alt.Order("group:N"),
+        tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
+                 alt.Tooltip("group:N", title="group"),
+                 alt.Tooltip("contrib:Q", format="+.2f", title="contribution")])
+    line = alt.Chart(tdf).mark_line(strokeWidth=2, color=p.ink,
+                                    interpolate="monotone").encode(
+        x=x_enc, y="total:Q",
+        tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
+                 alt.Tooltip("total:Q", format="+.2f", title="Total z")])
+    return _apply(alt.layer(zero, bars, line), p, height)

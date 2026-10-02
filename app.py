@@ -28,10 +28,12 @@ from core import bbsw as bbswmod
 from core import employment as empmod
 from core import contracts, econ_calendar, model, montecarlo, pricing, rba_calendar
 from core import inflation as infl
+from core import macro as macromod
 from core import path as pathmod
 from core import sizing as sizingmod
 from core import strip as stripmod
 from data import abs as absmod
+from data import abs_sdmx
 from data import asx, rba
 from data import cache as datacache
 from data.common import Observation
@@ -261,6 +263,75 @@ def flow_series() -> dict:
         "z_wages": empmod.zscores(wages),
         "period": absmod.latest_release(absmod.LF_LANDING) or "",
     }
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling macro indicators…")
+def fetch_macro_bundle() -> dict[str, list[tuple[date, float]]]:
+    """Raw history for every Macro-tab indicator that has a wired feed, keyed by
+    the `core.macro` indicator key.
+
+    Three sources, all keyless: the ABS SDMX data API (`data.abs_sdmx`) for the
+    national-accounts / prices / business-indicator dozen, RBA statistical
+    tables for vacancies, wages, credit, and the labour and CPI fetches the rest
+    of the app already runs. Anything absent leaves that indicator on its seeded
+    slide reading. Never raises -- a dead source just means fewer live rows.
+    """
+    out: dict[str, list[tuple[date, float]]] = {}
+
+    def put(key, rows):
+        rows = [(d, v) for d, v in (rows or []) if v is not None]
+        if rows:
+            out[key] = sorted(rows)
+
+    try:
+        lab = abs_series()
+        put("unemployment", lab.get("unemployment"))
+        put("underemployment", lab.get("underemployment"))
+    except Exception:
+        pass
+    try:
+        put("cpi_trimmed_mean", cpi_series().get("trimmed_q"))
+    except Exception:
+        pass
+    try:
+        h5 = rba.table_cached("h5")
+        put("job_vacancies", [(o.date, o.value) for o in h5.get("GLFOSVT", [])])
+    except Exception:
+        pass
+    try:
+        h4 = rba.table_cached("h4")
+        put("wpi", [(o.date, o.value) for o in h4.get("GWPIQP", [])])
+    except Exception:
+        pass
+    # RBA table D1's DGFAC* credit-growth series were frozen at the June 2019
+    # EFS-collection changeover -- the live CSV still serves them, seven years
+    # stale, which is worse than the seed. Private Credit therefore stays on the
+    # slide reading until a current credit-growth series is wired.
+    for k in abs_sdmx.wired_keys():
+        try:
+            put(k, abs_sdmx.series_pairs(k))
+        except Exception:
+            continue
+
+    # A pasted history for any indicator (the five commercial ones, or a wired
+    # one a user wants to correct) wins outright -- same store the NAB capacity
+    # print uses, keyed "macro:<indicator>". Read the file once, not per row.
+    try:
+        with open(MANUAL_SERIES_PATH, encoding="utf-8") as fh:
+            raw_manual = json.load(fh)
+    except (OSError, ValueError):
+        raw_manual = {}
+    for ind in macromod.INDICATORS:
+        rows = raw_manual.get(f"macro:{ind.key}") or []
+        pasted = []
+        for pair in rows:
+            try:
+                pasted.append((date.fromisoformat(pair[0]), float(pair[1])))
+            except (ValueError, TypeError, IndexError):
+                continue
+        if pasted:
+            out[ind.key] = sorted(pasted)
+    return out
 
 
 def manual_series(name: str) -> list[tuple[date, float]]:
@@ -855,7 +926,7 @@ verdict_slot = RIGHT.container()
 # ------------------------------------------------------------------ working
 
 SECTIONS = ["Pricing", "Curve", "Sensitivity & size", "Path & kills",
-            "Labour", "Inflation", "Vote count", "Data"]
+            "Macro", "Labour", "Inflation", "Vote count", "Data"]
 
 with LEFT:
     # A segmented control rather than st.tabs: Streamlit keeps every tab panel
@@ -874,6 +945,9 @@ with LEFT:
             st.session_state["hist_window_labour"] = "10Y"
         if section == "Inflation":
             st.session_state["hist_window_inflation"] = "10Y"
+        if section == "Macro":
+            st.session_state["hist_window_macro"] = "10Y"
+            st.session_state["macro_read_mode"] = "Slide — Aug 2026"
         st.session_state["_prev_section"] = section
 
     # ---------------------------------------------------------- 1. Pricing
@@ -2184,6 +2258,166 @@ with LEFT:
                 f"**{M.kill.count} kill criteria live — the probability estimate is "
                 f"stale.**  \n" + " · ".join(M.kill.triggered))
 
+    # ------------------------------------------------------------- 5. Macro
+    elif section == "Macro":
+        bundle = fetch_macro_bundle()
+
+        # The tab opens on the published slide so it reproduces the picture
+        # row-for-row. "Live" swaps in the keyless feeds (ABS SDMX, RBA H4/H5,
+        # the labour and CPI fetches), which move a dozen readings past the
+        # August 2026 vintage and re-score them against the same seeded μ/σ.
+        # No `default=`: the section-entry reset in `_prev_section` seeds
+        # `macro_read_mode` in session state, and the `or` covers a bare first
+        # paint -- passing both would trip Streamlit's default-plus-state warning.
+        mreadmode = st.segmented_control(
+            "Readings", ("Slide — Aug 2026", "Live"),
+            key="macro_read_mode", label_visibility="collapsed",
+            help="Slide reproduces the Westpac CIO picture exactly. Live pulls "
+                 "the latest print for every wired series; commercial and "
+                 "un-keyed rows stay on the slide either way.") or "Slide — Aug 2026"
+        _use_live = mreadmode == "Live"
+        readings = macromod.dashboard(bundle if _use_live else None)
+        gscores = macromod.groups(readings)
+        gtotal = macromod.total(readings)
+        n_live = sum(1 for r in readings if r.live)
+        n_wired = sum(1 for k in macromod.BY_KEY if k in bundle)
+
+        mhdr, mhlp = st.columns([1, 0.06], vertical_alignment="center")
+        with mhdr:
+            C.section(
+                "Australian Macroeconomic Indicators",
+                "Every series as a z-score of its own 2000–2020 short-run "
+                "momentum — positive reads as a stronger economy — grouped into "
+                "five blocks with a Total.")
+        with mhlp:
+            C.formula_help(
+                r"z = \frac{x_t - \mu_{2000\text{–}2020}}"
+                r"{\sigma_{2000\text{–}2020}}",
+                "x is the series' momentum transform: q/q % change, a 3-month "
+                "moving average against itself three months earlier (a point "
+                "change for the labour rates, annualised % for price and dollar "
+                "levels), or a plain 3-month average for the survey indices. "
+                "Unemployment and underemployment are sign-flipped so a positive "
+                "z always means stronger. Group = mean of members; Total = mean "
+                "of all scored members (equal weight per indicator, matching the "
+                "slide). μ and σ are the Westpac slide's published 2000–2020 "
+                "mean and a σ backed out of its printed z; a wired feed moves "
+                "the latest reading forward and re-scores it against that same "
+                "μ/σ.",
+                "see core.macro", "macro-z")
+
+        if _use_live:
+            C.vintage(
+                f"Live · {n_live} of {len(readings)} rows moved past the Aug 2026 "
+                f"slide; the other {len(readings) - n_live} have no wired feed "
+                "(† un-keyed public, ‡ commercial) and stay on the slide reading. "
+                "Group scores and Total below shift with the live rows.")
+        else:
+            C.vintage(
+                "Westpac CIO slide, Aug 2026 SoMP round — reproduced row-for-row. "
+                f"{n_wired} rows have a keyless live feed available (switch to "
+                "Live above).")
+        C.legend([("Stronger than 2000–2020 average", P.positive),
+                  ("Weaker", P.negative)])
+        st.altair_chart(charts.macro_dots(readings, P), width="stretch", theme=None)
+
+        # The full table, always visible: Last, the 2000–2020 mean and a
+        # heat-shaded Z, a bold tinted subtotal row per group and a Total —
+        # the same shape as the source slide.
+        _gcol = charts._macro_group_colours(P)
+        _by_group = {g.group: g for g in gscores}
+
+        def _zcell(z: float | None) -> str:
+            if z is None:
+                return "—"
+            rr, gg, bb = (int(c * 255) for c in
+                          charts._hex_rgb(P.positive if z >= 0 else P.negative))
+            a = 0.14 + 0.5 * min(1.0, abs(z) / 3.0)
+            # Three decimals to match the slide's own precision.
+            return (f'<span style="display:inline-block;min-width:3.6em;'
+                    f'text-align:right;padding:0 6px;border-radius:3px;'
+                    f'background:rgba({rr},{gg},{bb},{a:.2f})">{z:+.3f}</span>')
+
+        def _val(v: float | None) -> str:
+            # 4 significant figures keeps the slide's varying precision
+            # (0.813, -0.0193, 43.7) instead of forcing a fixed 2 dp.
+            return "—" if v is None else f"{v:.4g}"
+
+        mrows, mmark, mbg = [], [], {}
+        _ri = 0
+        for g in macromod.GROUPS:
+            gs = _by_group.get(g)
+            mrows.append([g, "", "", "", _zcell(gs.z if gs else None)])
+            mmark.append(_ri)
+            rr, gg, bb = (int(c * 255) for c in charts._hex_rgb(_gcol[g]))
+            mbg[_ri] = f"rgba({rr},{gg},{bb},0.12)"
+            _ri += 1
+            for r in readings:
+                if r.indicator.group != g:
+                    continue
+                ind = r.indicator
+                if _use_live:
+                    dagger = " ‡" if ind.commercial else ("" if r.live else " †")
+                else:
+                    dagger = " ‡" if ind.commercial else ""
+                mrows.append([
+                    f'<span style="padding-left:14px">{ind.label}{dagger}</span>',
+                    ind.transform_label,
+                    _val(r.last),
+                    _val(r.hist_mean),
+                    _zcell(r.z),
+                ])
+                _ri += 1
+        mrows.append(["Total", "", "", "", _zcell(gtotal)])
+        mmark.append(_ri)
+        C.table(["Indicator", "Transform",
+                 "Current" if not _use_live else "Last", "Mean 00–20", "Z"],
+                mrows, numeric=(2, 3, 4), mark_rows=mmark, row_bg=mbg)
+        if _use_live:
+            C.note("† un-wired public series — no ABS SDMX key or pasted history "
+                   "yet, so still on the slide reading.   "
+                   "‡ commercial series with no free feed (ANZ-Indeed job ads, "
+                   "Melbourne Institute inflation expectations, Westpac-MI consumer "
+                   "sentiment, ANZ-Roy Morgan consumer confidence, NAB business "
+                   "conditions) — seeded from the slide; paste a history in "
+                   "`meetings/_manual_series.json` under `macro:<key>` to update.")
+        else:
+            C.note("Reproduces the Westpac CIO slide exactly: Current and "
+                   "Mean 00–20 are its printed columns, and the Z-score column "
+                   "(and every group score and the Total) recomputes from them. "
+                   "‡ marks the five commercial series with no free feed.")
+
+        # ---------- Momentum Signal ----------
+        st.divider()
+        p2h, p2help = st.columns([1, 0.06], vertical_alignment="center")
+        with p2h:
+            st.markdown("### Momentum Signal")
+        with p2help:
+            C.formula_help(
+                "", "Each group's contribution — its members' mean z times its "
+                "share of the reporting count — stacked per quarter, with the "
+                "equal-weighted Total as the black line. Built only from rows "
+                "with a wired or pasted history, so the last bar equals the "
+                "Live group scores above over that same subset (it will differ "
+                "from the Slide table, which also carries the seed-only rows). "
+                "A group with no free feed — Housing — sits the chart out.",
+                "", "macro-momentum")
+        mwin = st.segmented_control(
+            "History window", HISTORY_WINDOWS,
+            key="hist_window_macro", label_visibility="collapsed",
+            help="Scopes the Momentum Signal only; the indicators and z-scores "
+                 "above always use the full 2000–2020 base.")
+        mstart = _history_window_start(mwin or "10Y")
+        mhist = macromod.momentum_history(bundle, date(2000, 1, 1))
+        if mhist:
+            st.altair_chart(
+                charts.macro_momentum(mhist, P, window_start=mstart),
+                width="stretch", theme=None)
+        else:
+            st.info("No wired histories yet — the Momentum Signal needs at least "
+                    "one live series. The z-score table above still stands on "
+                    "the seeded slide readings.")
+
     # ----------------------------------------------------------- 5. Labour
     elif section == "Labour":
         ehdr, ehlp = st.columns([1, 0.06], vertical_alignment="center")
@@ -2688,7 +2922,8 @@ with LEFT:
             # front, the disk cache and the in-process table memo behind it.
             for fn in (fetch_ib, fetch_ir, fetch_rba_table, rba_spot, bbsw_history,
                        kill_series_history, policy_changes, abs_series,
-                       cpi_series, cpi_classification, flow_series):
+                       cpi_series, cpi_classification, flow_series,
+                       fetch_macro_bundle):
                 fn.clear()
             rba._table_memo.cache_clear()
             absmod.latest_release.cache_clear()
@@ -2861,6 +3096,43 @@ with LEFT:
             "contribution is the sum of its children's — which self-corrects "
             "when the ABS moves a class, as the April 2026 Labour Force renaming "
             "is a live reminder they do.")
+
+        st.divider()
+        C.section("Macro indicators",
+                  "The 23-series z-score table and Momentum Signal on the Macro "
+                  "tab. Baselines are seeded from the Westpac CIO slide; a wired "
+                  "keyless feed moves the latest reading forward.")
+        _mb = fetch_macro_bundle()
+        _mread = macromod.dashboard(_mb)
+        C.data_source_header(
+            "ABS SDMX data API", any(k in _mb for k in abs_sdmx.wired_keys()),
+            f"{sum(1 for k in abs_sdmx.wired_keys() if k in _mb)} of "
+            f"{len(abs_sdmx.wired_keys())} dataflows returned "
+            "(national accounts, PPI, business indicators, capex, construction).", P)
+        C.data_source_header(
+            "RBA tables H4 / H5",
+            any(k in _mb for k in ("wpi", "job_vacancies")),
+            "wage price index, job vacancies. (D1 credit growth is frozen at "
+            "the June 2019 EFS changeover, so Private Credit stays on the seed.)", P)
+        _live = [r.indicator.label for r in _mread if r.live]
+        C.table(["Indicator", "Group", "Transform", "Obs", "From", "To", "State"],
+                [[r.indicator.label, r.indicator.group, r.indicator.transform_label,
+                  f"{len(_mb.get(r.indicator.key, [])):,}" if r.live else "—",
+                  f"{_mb[r.indicator.key][0][0]:%b %Y}" if r.indicator.key in _mb else "—",
+                  f"{_mb[r.indicator.key][-1][0]:%b %Y}" if r.indicator.key in _mb else "—",
+                  "live" if r.live else ("commercial" if r.indicator.commercial
+                                         else "seed")]
+                 for r in _mread],
+                numeric=(3,), nowrap=True)
+        C.note(
+            f"{len(_live)} of {len(_mread)} rows are live. The rest sit on the "
+            "slide's seeded reading: the five commercial surveys have no free "
+            "feed, and a few ABS workbooks (building approvals, home loans, "
+            "CoreLogic house prices, the CVM household-spending indicator) are "
+            "not yet keyed. Paste a history for any of them in "
+            "`meetings/_manual_series.json` under `macro:<key>` — it flows "
+            "through the same transform as a wired series and joins the "
+            "Momentum Signal.")
 
         st.divider()
         C.section("Releases between now and the decision")

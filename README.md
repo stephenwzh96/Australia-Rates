@@ -95,6 +95,18 @@ pins those to catch a port that damaged the engine. What genuinely changed:
   still a proxy: BBSW spans about 1.5 meetings, so read it as the short end's
   daily noise rather than this one meeting's, and type an override when the
   distinction matters.
+- **The Macro tab is seeded, not fetched.** The FOMC version pulls every
+  indicator from FRED; Australia has no equivalent, and five of the Westpac CIO
+  slide's 23 series are commercial (ANZ-Indeed job ads, MI inflation
+  expectations, Westpac-MI sentiment, ANZ-Roy Morgan confidence, NAB business
+  conditions). So `core.macro` seeds every baseline mean and σ from the
+  published slide — σ backed out of the printed z as `|current − mean| / |z|` —
+  and the table reproduces the slide exactly out of the box. A dozen rows then
+  fetch live from the keyless ABS SDMX data API (`data.abs_sdmx`: national
+  accounts, PPI, business indicators, capex, construction) and RBA tables H4/H5,
+  re-scoring the latest reading against that same seeded μ/σ. The rest sit on
+  the seed until a key or a pasted history (`meetings/_manual_series.json`,
+  `macro:<key>`) is added.
 
 ## Shared with the FOMC version
 
@@ -298,7 +310,7 @@ next-release date off that same calendar.
 ## Layout
 
 ```
-app.py                Streamlit entry: sidebar, eight sections, Verdict rail
+app.py                Streamlit entry: sidebar, nine sections, Verdict rail
 core/                 Pure calculation -- no Streamlit imports
   pricing.py          Steps 1-5   implied prob, EV, breakeven, sensitivity, Kelly
   strip.py            Step 1a     IB -> per-meeting priced path
@@ -313,9 +325,11 @@ core/                 Pure calculation -- no Streamlit imports
   model.py            one computation of everything, shared by app and export
   employment.py       full-employment z-scores, sign conventions, panel
   inflation.py        CPI hierarchy, breadth, composition, cycle split
+  macro.py            Westpac CIO macro slide: 23 momentum z-scores, seeded
 data/asx.py           IB and IR strips, settlement-first
 data/rba.py           statistical tables, keyless CSV
 data/abs.py           ABS Labour Force and CPI Excel time series
+data/abs_sdmx.py      ABS SDMX data API: national accounts, prices, business
 state/store.py        per-meeting JSON, clone-forward
 ui/                   components, charts, theme, style
 export/report.py      Markdown mirroring the sections
