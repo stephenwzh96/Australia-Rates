@@ -35,6 +35,13 @@ meeting, so a meeting can be bookmarked.
 | ABS CPI table 18 | quarterly expenditure-class indexes, index-point contributions | no |
 | ABS CPI appendix 1a | 87 seasonally adjusted class indexes, trimmed mean, from 1982 | no |
 | ABS CPI table 6 | monthly trimmed mean and ex-volatiles measures | no |
+| ABS SDMX data API | complete monthly CPI and weights, HSI, filled jobs by industry, WPI by industry, national accounts, capex, PPI | no |
+| ABS Building Approvals / Lending Indicators | dwelling approvals (table 6), new housing loan commitments (table 1) | no |
+| RBA tables D1, G3, H1–H3 | credit, inflation expectations, GDP/income, household finances, Westpac-MI sentiment, NAB conditions, approvals | no |
+| RBA Statement on Monetary Policy | the forecast table, every round | no |
+| rba.gov.au Board page and decision statements | the nine members and portraits; every decision with its published, unattributed vote split | no |
+| Own ASX snapshots (`data/snapshots/`) | every daily settlement the app has seen — the contract history ASX does not publish | no |
+| Claude Agent SDK / WorkBuddy | consensus, speech roundup, street calls, trade recs (billed, on a button) | sign-in |
 
 A failed HTTP call never blocks the Verdict. With both sources dead and no
 cache, every field is still typeable and the pricing, sizing and export all
@@ -57,6 +64,20 @@ have quietly corrupted numbers:
   fallbacks.
 
 ## What differs from the US version
+
+Every US tab now has an Australian counterpart (`docs/us-parity.md` has the
+panel-by-panel grading). The tabs added in the parity pass:
+
+- **Trade recs / Street calls** — the US research-agent tabs, on the RBA street
+  and the IB / IR / ACGB desk.
+- **Vote count** — the US roster, transition chart and bloc means, seated from
+  rba.gov.au, plus what the US has no need of: the Board's published,
+  unattributed vote at every meeting, drawn as a ballot of nine seats.
+- **SMP & forecasts** — the Statement's forecast table and cash-rate path in
+  place of the SEP and dots, a named read of the Board, and a computed
+  Taylor-rule heatmap.
+- **Analysis** — the US next-print unemployment model on the Labour Force, with
+  the street's consensus in place of Kalshi.
 
 The payoff algebra is identical — the same worked example gives 32% implied,
 +5.50bp EV, 32% breakeven and 68.75%/17.2% Kelly on both, and the test suite

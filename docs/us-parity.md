@@ -15,9 +15,8 @@ Grades:
 - **Absent**: nothing in Australia can stand in. The panel says so instead of
   faking it.
 
-Status: **done** (in commit `0b147bc`, *Restructure onto the FOMC app's front
-end*), **build** (data verified, not yet built), or **blocked** (needs a
-decision).
+Status: **done** (built on the `us-parity` branch; see the build order in §17
+and the commits), or **later** (deliberately deferred).
 
 ---
 
@@ -57,7 +56,7 @@ Two further finds matter for the inflation tab:
 | Sidebar: refresh, meeting, as-of + Today, trade, sizing, view, save, recall/delete | Same. Picking a contract jumps to its meeting; a new meeting sizes in its own contract | Exact | done |
 | Section order | Trade recs · Curve · Sizing · Path · Releases · Vote count · **SMP & forecasts** · Street calls · Macro · Labour · Inflation · Growth · Analysis · Data | Exact (SEP renamed) | 9 of 14 done |
 | Pricing tab, kill criteria | Retired, as in the US version | Exact | done |
-| "Your view, in moves" for a contract spanning several meetings (`core/moves.py`) | Port. It matters more here: an IR bill's 90 days usually span 1–2 meetings | Exact | build |
+| "Your view, in moves" for a contract spanning several meetings (`core/moves.py`) | Port. It matters more here: an IR bill's 90 days usually span 1–2 meetings | Exact | done |
 
 ---
 
@@ -87,7 +86,7 @@ Two further finds matter for the inflation tab:
 | Path risk MTM ladder | Same | Exact | done |
 | Exit levels, exit table, stop-cost decomposition | Same | Exact | done |
 | Monte Carlo fan + release markers + stop/target sweeps + multiplier table | Same. Volatility comes from 3-month BBSW's quiet days (no ASX price history) | Close: a vol proxy, stated on screen | done |
-| Multi-meeting levels (moves mode) | Port with `core/moves.py` | Exact | build |
+| Multi-meeting levels (moves mode) | Port with `core/moves.py` | Exact | done |
 
 ---
 
@@ -97,8 +96,8 @@ Two further finds matter for the inflation tab:
 |---|---|---|---|---|---|
 | "Around the meeting" calendar, tier chips, past-quarter expander, family tints | FRED/OMB schedule | ABS/RBA rule-dated calendar | rule + typed | Exact | done |
 | Actual column (latest revision for the reference period) | FRED | Unemployment rate, trimmed mean q/q and m/m y/y, WPI q/q, GDP q/q, decision outcome | ABS LF, CPI, RBA H4, ABS `ANA_EXP`, RBA F1 | Exact | done |
-| Reaction card: three numbers, moves and q per scenario, playbook table, trigger lines, playbook-levels and P&L charts, saved cards | strip + FRED specs | Same, AU specs: Labour Force (employment Δk, unemployment rate ▼), CPI (trimmed mean q/q, headline q/q), monthly CPI (trimmed mean y/y, headline y/y), WPI q/q, GDP q/q. Market level and anchor price off IB | ASX IB | Exact | build |
-| "What the street expects" consensus search | research agent | Same agent, AU releases | agent | Exact | **blocked** (§12) |
+| Reaction card: three numbers, moves and q per scenario, playbook table, trigger lines, playbook-levels and P&L charts, saved cards | strip + FRED specs | Same, AU specs: Labour Force (employment Δk, unemployment rate ▼), CPI (trimmed mean q/q, headline q/q), monthly CPI (trimmed mean y/y, headline y/y), WPI q/q, GDP q/q. Market level and anchor price off IB | ASX IB | Exact | done |
+| "What the street expects" consensus search | research agent | Same agent, AU releases | agent | Exact | done |
 
 ---
 
@@ -107,10 +106,10 @@ Two further finds matter for the inflation tab:
 | US panel | US data | AU replication | AU data | Grade | Status |
 |---|---|---|---|---|---|
 | Vote arithmetic board | roster | Same: 9-member Monetary Policy Board, majority, Governor's casting vote | roster | Exact | done |
-| Roster editor (scores now vs last meeting, blocs, movers, score history) | roster file | Same columns; AU seats (Governor, Deputy, Treasury Secretary, 6 external) | `_roster.json` | Exact | partial: editor done; score roll and history to build |
-| "Where the committee sits": hawk-dove transition chart with bloc icons | roster | Same chart | roster | Exact | build |
-| *(no US equivalent)* | — | **Published vote history**: unattributed split at every decision since the 2025 reform. Checks whether your roster read reproduces the last split | RBA statements, scraped | AU-only addition: the "published layer" the US gets from dots | build |
-| Speech roundup (agent, writes scores back) | research agent | Same for Board members' speeches and appearances | agent | Exact | **blocked** (§12) |
+| Roster editor (scores now vs last meeting, blocs, movers, score history) | roster file | Same columns; AU seats (Governor, Deputy, Treasury Secretary, 6 external) | `_roster.json` | Exact | done |
+| "Where the committee sits": hawk-dove transition chart with bloc icons | roster | Same chart | roster | Exact | done |
+| *(no US equivalent)* | — | **Published vote history**: unattributed split at every decision since the 2025 reform. Checks whether your roster read reproduces the last split | RBA statements, scraped | AU-only addition: the "published layer" the US gets from dots | done |
+| Speech roundup (agent, writes scores back) | research agent | Same for Board members' speeches and appearances | agent | Exact | done |
 
 ---
 
@@ -118,11 +117,11 @@ Two further finds matter for the inflation tab:
 
 | US panel | US data | AU replication | AU data | Grade | Status |
 |---|---|---|---|---|---|
-| SEP median table with change vs prior round | FRED median-dot series | **SMP detailed forecast table**: GDP, consumption, unemployment, underutilisation, WPI, CPI, trimmed mean, cash-rate assumption, by half-year horizon, with the change vs the prior SMP | RBA SMP *Outlook* table 3.1 (scraped, every round); history in `*-by-horizon.xls` | Exact | build |
-| Published dot plot (distribution, current vs prior round) | Fed SEP fig. 2 | **SMP cash-rate assumption path**, current vs prior round, against today's IB strip. The RBA publishes no dots: its "path" is the market path at the forecast date, so the useful read is how far the market has moved since | SMP table + ASX | Substitute: no distribution exists | build |
-| "Your named read": one dot per participant | roster | Same editor and per-horizon dot panels for the 9 members, checked against the published median **and the last published vote split** | roster | Close: no published distribution to match | build |
-| Balanced-approach rule grid on SEP medians | SEP + FRED | Same rule on SMP trimmed mean and unemployment forecasts: π* = 2.5 (band midpoint), editable r* and u* (RBA NAIRU ≈ 4.5) | SMP + RBA F1 | Exact | build |
-| Atlanta Fed Taylor-rule heatmap (5 r* × 6 gaps) | Atlanta Fed workbook | **Computed in-app**: r* estimates (RBA published range low/mid/high, real-rate rule-of-thumb) × gap measures (unemployment gap at several NAIRU estimates, underutilisation gap, output-gap proxy). Shaded against the cash rate | RBA H1/H5/G1, editable inputs | Substitute: no AU publisher, so the grid is built, not read | build |
+| SEP median table with change vs prior round | FRED median-dot series | **SMP detailed forecast table**: GDP, consumption, unemployment, underutilisation, WPI, CPI, trimmed mean, cash-rate assumption, by half-year horizon, with the change vs the prior SMP | RBA SMP *Outlook* table 3.1 (scraped, every round); history in `*-by-horizon.xls` | Exact | done |
+| Published dot plot (distribution, current vs prior round) | Fed SEP fig. 2 | **SMP cash-rate assumption path**, current vs prior round, against today's IB strip. The RBA publishes no dots: its "path" is the market path at the forecast date, so the useful read is how far the market has moved since | SMP table + ASX | Substitute: no distribution exists | done |
+| "Your named read": one dot per participant | roster | Same editor and per-horizon dot panels for the 9 members, checked against the published median **and the last published vote split** | roster | Close: no published distribution to match | done |
+| Balanced-approach rule grid on SEP medians | SEP + FRED | Same rule on SMP trimmed mean and unemployment forecasts: π* = 2.5 (band midpoint), editable r* and u* (RBA NAIRU ≈ 4.5) | SMP + RBA F1 | Exact | done |
+| Atlanta Fed Taylor-rule heatmap (5 r* × 6 gaps) | Atlanta Fed workbook | **Computed in-app**: r* estimates (RBA published range low/mid/high, real-rate rule-of-thumb) × gap measures (unemployment gap at several NAIRU estimates, underutilisation gap, output-gap proxy). Shaded against the cash rate | RBA H1/H5/G1, editable inputs | Substitute: no AU publisher, so the grid is built, not read | done |
 
 ---
 
@@ -130,8 +129,8 @@ Two further finds matter for the inflation tab:
 
 | US panel | AU replication | Grade | Status |
 |---|---|---|---|
-| Street call book: each bank's call for the meeting, path, consensus, dispersion, changes | Same for the AU desks (CBA, Westpac, NAB, ANZ, Macquarie, UBS, Goldman, JPM, Citi, Deutsche, Barclays, Morgan Stanley, HSBC AU) | Exact | **blocked** (§12) |
-| Trade recs: three trades (next tier-1 print, next meeting, 2–3 months) from a brief of every tab | Same brief built from the AU tabs; trades in IB / IR / spreads | Exact | **blocked** (§12) |
+| Street call book: each bank's call for the meeting, path, consensus, dispersion, changes | Same for the AU desks (CBA, Westpac, NAB, ANZ, Macquarie, UBS, Goldman, JPM, Citi, Deutsche, Barclays, Morgan Stanley, HSBC AU) | Exact | done |
+| Trade recs: three trades (next tier-1 print, next meeting, 2–3 months) from a brief of every tab | Same brief built from the AU tabs; trades in IB / IR / spreads | Exact | done |
 
 ---
 
@@ -145,7 +144,7 @@ the right Australian benchmark. Both keep the same layout.
 |---|---|---|---|
 | Heading + total/group board, dot chart beside the grouped z-table | Same layout; Slide / Live switch | Exact | done |
 | Momentum signal (stacked group contributions + total) | Same | Exact | done |
-| Live coverage | **Wire 6 more rows from the probe**: Westpac-MI sentiment (H3), NAB business conditions (H3), dwelling approvals (H3), MI inflation expectations (G3, quarterly), private credit (D1 `DGFACNF12`), household spending (ABS `HSI_M`). That leaves ANZ-Indeed job ads and ANZ-Roy Morgan confidence commercial | Exact | build |
+| Live coverage | **Wired**: Westpac-MI sentiment and NAB conditions (H3), MI inflation expectations (G3, quarterly averages read as the 3m m.a.), total credit (D1 `DGFACNWM` spliced onto the frozen `DGFACM`), building approvals and private houses (ABS 8731 table 6), home loans (ABS 5601 table 1, reproduces the slide). Approvals and NAB score on their own 2000–2020 baseline (§), their scale differing from the slide's. Live is the default reading. Still on the slide: ANZ-Indeed job ads and ANZ-Roy Morgan confidence (commercial), CoreLogic values and the HSI in volume terms (no free feed in the slide's form) | Exact / Close | done |
 
 ---
 
@@ -153,16 +152,16 @@ the right Australian benchmark. Both keep the same layout.
 
 | US panel | US data | AU replication | AU data (verified) | Grade | Status |
 |---|---|---|---|---|---|
-| Overall indicator: ~35 indicators percentile-ranked, current vs a year ago, by 7 channels, "waiting on" releases | BLS/JOLTS/claims/Fed surveys | **Same method, ~20 AU indicators in the same 7 channels.** Slack: U, underemployment, underutilisation, youth U, medium-term U share. Participation: participation Δ, emp-pop Δ. Employment & hours: employment Δ%, hours Δ%, full-time share. Hiring: U→E and N→E flow rates. Firing: E→U flow rate. Stated demand: vacancies/LF, V/U, NAB capacity, NAB conditions. Worker confidence: job-switching proxy, consumer sentiment | ABS LF, LF Detailed, LMS1 gross flows, RBA H5, H3; NAB capacity pasted | Close: no claims, JOLTS or Fed PMIs; flows and vacancies stand in. Channel memberships listed | build |
-| Slack heatmap (percentiles by month) | same | Same | same | Close | build |
-| Share of indicators tightening (diffusion, m/m and y/y) | same | Same | same | Close | build |
-| Diffusion by channel, breadth inside each channel | same | Same | same | Close | build |
-| Series, direction and definitions table | same | Same | same | Exact | build |
+| Overall indicator: ~35 indicators percentile-ranked, current vs a year ago, by 7 channels, "waiting on" releases | BLS/JOLTS/claims/Fed surveys | **Same method, ~20 AU indicators in the same 7 channels.** Slack: U, underemployment, underutilisation, youth U, medium-term U share. Participation: participation Δ, emp-pop Δ. Employment & hours: employment Δ%, hours Δ%, full-time share. Hiring: U→E and N→E flow rates. Firing: E→U flow rate. Stated demand: vacancies/LF, V/U, NAB capacity, NAB conditions. Worker confidence: job-switching proxy, consumer sentiment | ABS LF, LF Detailed, LMS1 gross flows, RBA H5, H3; NAB capacity pasted | Close: no claims, JOLTS or Fed PMIs; flows and vacancies stand in. Channel memberships listed | done |
+| Slack heatmap (percentiles by month) | same | Same | same | Close | done |
+| Share of indicators tightening (diffusion, m/m and y/y) | same | Same | same | Close | done |
+| Diffusion by channel, breadth inside each channel | same | Same | same | Close | done |
+| Series, direction and definitions table | same | Same | same | Exact | done |
 | *(AU)* Full-employment z-panel, capacity vs unemployment, job flows vs WPI | — | Kept: the RBA-framed AU charts the user built | ABS, RBA, NAB | AU-only | done |
-| Labour-market grid: unemployment, LFPR, emp-pop, jobs–workers gap, layoffs & quits, net job gains | FRED | Unemployment, participation, emp-pop (H5); **jobs–workers gap = (employed + vacancies − LF)/LF** (H5); **job loss (E→U) and job switching** instead of layoffs/quits; **monthly employment change** (H5). Shading for technical recessions computed from H1 GDP | RBA H5, H1; ABS LMS1 | Exact ×4, Substitute ×1 (no JOLTS) | build |
-| Unemployment-rate decomposition into gross flows (6 panels) | CPS flows | **Same identity on ABS LMS1 gross flows** (EU, UE, NU, UN, participation, residual) | ABS LMS1 (already cached) | Exact | build |
-| Payrolls by component (Private ex H&E, E&H, Government) + 3mma lines | CES | **Filled jobs by industry, quarterly**: market sector ex health & education, health care + education, public administration. The same non-market-sector question the RBA asks | ABS `LABOUR_ACCT_Q` (to 2026-Q2) | Close: quarterly, not monthly | build |
-| Sector wage-growth heatmap (AHE y/y, 12 months, row-scaled) | CES AHE | **WPI y/y by industry** (19 industries + public/private), last 8 quarters, same row-scaled colouring | ABS `WPI` v1.2.0 (to 2026-Q2) | Close: quarterly; WPI is the better measure (fixed composition) | build |
+| Labour-market grid: unemployment, LFPR, emp-pop, jobs–workers gap, layoffs & quits, net job gains | FRED | Unemployment, participation, emp-pop (H5); **jobs–workers gap = (employed + vacancies − LF)/LF** (H5); **job loss (E→U) and job switching** instead of layoffs/quits; **monthly employment change** (H5). Shading for technical recessions computed from H1 GDP | RBA H5, H1; ABS LMS1 | Exact ×4, Substitute ×1 (no JOLTS) | done |
+| Unemployment-rate decomposition into gross flows (6 panels) | CPS flows | **Same identity on ABS LMS1 gross flows** (EU, UE, NU, UN, participation, residual) | ABS LMS1 (already cached) | Exact | done |
+| Payrolls by component (Private ex H&E, E&H, Government) + 3mma lines | CES | **Filled jobs by industry, quarterly**: market sector ex health & education, health care + education, public administration. The same non-market-sector question the RBA asks | ABS `LABOUR_ACCT_Q` (to 2026-Q2) | Close: quarterly, not monthly | done |
+| Sector wage-growth heatmap (AHE y/y, 12 months, row-scaled) | CES AHE | **WPI y/y by industry** (19 industries + public/private), last 8 quarters, same row-scaled colouring | ABS `WPI` v1.2.0 (to 2026-Q2) | Close: quarterly; WPI is the better measure (fixed composition) | done |
 
 ---
 
@@ -170,14 +169,14 @@ the right Australian benchmark. Both keep the same layout.
 
 | US panel | US data | AU replication | AU data (verified) | Grade | Status |
 |---|---|---|---|---|---|
-| Sequential core trend (CPI and PCE panels, m/m with 3m/6m annualised, 2% pace line) + latest readings | FRED | **Monthly panel**: trimmed mean SA, headline SA, ex-volatiles (m/m, 3m and 6m annualised) from Apr 2024. **Quarterly panel**: trimmed mean q/q annualised since 1982. Line at the 2.5% pace | ABS `CPI` v2.0.0 (`999902`, `999901`, `999904`); ABS appendix 1a | Exact (two panels, as US) | build |
+| Sequential core trend (CPI and PCE panels, m/m with 3m/6m annualised, 2% pace line) + latest readings | FRED | **Monthly panel**: trimmed mean SA, headline SA, ex-volatiles (m/m, 3m and 6m annualised) from Apr 2024. **Quarterly panel**: trimmed mean q/q annualised since 1982. Line at the 2.5% pace | ABS `CPI` v2.0.0 (`999902`, `999901`, `999904`); ABS appendix 1a | Exact (two panels, as US) | done |
 | Breadth (share of basket above threshold) | BEA PCE detail | Same over 87 CPI classes, by count and weight | ABS CPI classes | Exact | done |
-| PCE dispersion (m/m vs share of spend above it, eras with fits) | BEA + Richmond Fed | Same construction, quarterly classes since 1990, eras and balanced-share read | ABS appendix 1a + weights | Close: quarterly | build |
-| FRBSF contribution stacks (goods/services groupings) + granular diverging | FRBSF workbooks | **Contribution stacks from the monthly CPI's own contribution measure**: groups (food, alcohol & tobacco, clothing, housing, furnishings, health, transport, communication, recreation, education, insurance & financial) and a goods / services / volatile split | ABS `CPI` measure 6 | Exact | build |
-| CPI breakdown monitor (item tree, weights, last 6 months m/m heat grid) | BLS tree | **Monthly CPI tree** (group → sub-group → class), weights, last 6 months m/m, same red/blue heat | ABS `CPI` v2.0.0 + `CPI_WEIGHTS` | Exact | build |
+| PCE dispersion (m/m vs share of spend above it, eras with fits) | BEA + Richmond Fed | Same construction, quarterly classes since 1990, eras and balanced-share read | ABS appendix 1a + weights | Close: quarterly | done |
+| FRBSF contribution stacks (goods/services groupings) + granular diverging | FRBSF workbooks | **Contribution stacks from the monthly CPI's own contribution measure**: groups (food, alcohol & tobacco, clothing, housing, furnishings, health, transport, communication, recreation, education, insurance & financial) and a goods / services / volatile split | ABS `CPI` measure 6 | Exact | done |
+| CPI breakdown monitor (item tree, weights, last 6 months m/m heat grid) | BLS tree | **Monthly CPI tree** (group → sub-group → class), weights, last 6 months m/m, same red/blue heat | ABS `CPI` v2.0.0 + `CPI_WEIGHTS` | Exact | done |
 | *(AU)* Composition stack, measures the Board targets, breadth vs trimmed mean, cyclical split | — | Kept | ABS | AU-only | done |
-| Household inflation expectations (NY Fed SCE point and density, UMich 5–10y) | NY Fed, UMich | **Consumer (MI) 1y, business 3m, union 1y/2y, market economists 1y/2y, 10y break-even** | RBA G3 (quarterly, to Sep 2026) | Close: quarterly, and a richer set | build |
-| Employment Cost Index | BLS | **Wage Price Index**: the same fixed-composition design; total, private, public, q/q and y/y | RBA H4, ABS `WPI` | Exact | build |
+| Household inflation expectations (NY Fed SCE point and density, UMich 5–10y) | NY Fed, UMich | **Consumer (MI) 1y, business 3m, union 1y/2y, market economists 1y/2y, 10y break-even** | RBA G3 (quarterly, to Sep 2026) | Close: quarterly, and a richer set | done |
+| Employment Cost Index | BLS | **Wage Price Index**: the same fixed-composition design; total, private, public, q/q and y/y | RBA H4, ABS `WPI` | Exact | done |
 
 ---
 
@@ -185,10 +184,10 @@ the right Australian benchmark. Both keep the same layout.
 
 | US panel | US data | AU replication | AU data (verified) | Grade | Status |
 |---|---|---|---|---|---|
-| Growth: weekly tracker (WEI + 13-wk avg) vs real GDP and GDI y/y; WEI-less-GDP board | FRED | Real GDP and real GDI y/y (exact) against a **monthly labour-input tracker: hours worked y/y and its 3-month average**. There is no AU weekly index; hours are the standard monthly GDP proxy (GDP = hours × productivity) | RBA H1, H5 | GDP/GDI exact; WEI → substitute | build |
-| Retail control group (1m and 3m annualised, 12m) | Census | **Household Spending Indicator, total** (1m and 3m annualised, 12m), with the discretionary / non-discretionary split | ABS `HSI_M` (to Aug 2026) | Close: HSI also covers services | build |
-| Household finances (income, income ex transfers, PCE, monthly) | BEA | Real household disposable income y/y, household consumption y/y, saving ratio (quarterly) | RBA H2 | Close: quarterly | build |
-| Retail category bubbles (m/m vs y/y, sized by share) | Census | **HSI's 14 categories**, same bubbles | ABS `HSI_M` | Exact | build |
+| Growth: weekly tracker (WEI + 13-wk avg) vs real GDP and GDI y/y; WEI-less-GDP board | FRED | Real GDP and real GDI y/y (exact) against a **monthly labour-input tracker: hours worked y/y and its 3-month average**. There is no AU weekly index; hours are the standard monthly GDP proxy (GDP = hours × productivity) | RBA H1, H5 | GDP/GDI exact; WEI → substitute | done |
+| Retail control group (1m and 3m annualised, 12m) | Census | **Household Spending Indicator, total** (1m and 3m annualised, 12m), with the discretionary / non-discretionary split | ABS `HSI_M` (to Aug 2026) | Close: HSI also covers services | done |
+| Household finances (income, income ex transfers, PCE, monthly) | BEA | Real household disposable income y/y, household consumption y/y, saving ratio (quarterly) | RBA H2 | Close: quarterly | done |
+| Retail category bubbles (m/m vs y/y, sized by share) | Census | **HSI's 14 categories**, same bubbles | ABS `HSI_M` | Exact | done |
 
 ---
 
@@ -196,10 +195,10 @@ the right Australian benchmark. Both keep the same layout.
 
 | US element | AU replication | Grade | Status |
 |---|---|---|---|
-| Pre-registered inputs, rolling 15-year single-input fits, forecast = mean push | Same method. Inputs: flow steady-state gap u* − u (LMS1, exact), employment growth 3m, hours worked 3m, E→U and U→E flow changes, vacancies Δ, NAB business conditions, consumer sentiment Δ, participation Δ | Close: no claims or JOLTS | build |
-| Real-time vintages (ALFRED) | ABS publishes no vintage archive, so latest-vintage data with the revision caveat on screen | Absent: disclosed | build |
-| Probabilities from past errors, track record, forecast vs actual, edge over time, inputs that lead, challenger | Same | Exact | build |
-| Model vs market (Kalshi odds) | No AU unemployment market exists. The panel is replaced by "model vs the street" (consensus from the reaction card, when entered) | Absent → substitute | build |
+| Pre-registered inputs, rolling 15-year single-input fits, forecast = mean push | Same method. Inputs: NAB business conditions (H3, level), Westpac-MI sentiment Δ (H3), job vacancies q/q (H5), employment growth 3m and underemployment Δ3m (LF X29). The flow gap was dropped: the gross flows are unadjusted and adjusting them needs future data | Close: no claims or JOLTS | done |
+| Real-time vintages (ALFRED) | The ABS keeps releases online only from Dec 2019, too short for a 15-year window: latest-vintage data with the caveat on screen. Release DAYS are exact from the ABS pages from Dec 2019; before, the cutoff errs early and every input and print-visibility rule errs late | Absent: disclosed | done |
+| Probabilities from past errors, track record, forecast vs actual, edge over time, inputs that lead, challenger | Same | Exact | done |
+| Model vs market (Kalshi odds) | No AU unemployment market exists. The panel is replaced by "model vs the street" (consensus from the reaction card, when entered) | Absent → substitute | done |
 
 ---
 
@@ -207,7 +206,7 @@ the right Australian benchmark. Both keep the same layout.
 
 | US panel | AU replication | Status |
 |---|---|---|
-| Source health in two columns, refresh, catalogue tables, sparklines | Same: ASX, RBA F1/H4/H5, ABS LF/LMS1/CPI, SDMX. To add: G3, H1–H3, D1, HSI, WPI, `LABOUR_ACCT_Q`, monthly CPI, SMP | done; additions build |
+| Source health in two columns, refresh, catalogue tables, sparklines | Same: ASX, RBA F1/H4/H5, ABS LF/LMS1/CPI, SDMX. To add: G3, H1–H3, D1, HSI, WPI, `LABOUR_ACCT_Q`, monthly CPI, SMP | done |
 | Freshness by release calendar, vintage registry (`data/vintage.py`, audits) | The AUS app caches by release period (`data.abs`) and rechecks daily. Porting the US vintage registry is a separate, larger job; worth doing after parity | later |
 
 ---
@@ -228,12 +227,19 @@ the right Australian benchmark. Both keep the same layout.
 
 ---
 
-## 16. Decision needed
+## 16. Agent backend (decided)
 
 The four agent-driven panels (consensus search, speech roundup, street call
-book, trade recs) run on a research agent: the Claude Agent SDK, or WorkBuddy
-as the US app also allows. The AUS venv has neither installed. Everything else
-above is buildable with what is already installed.
+book, trade recs) run on the Claude Agent SDK or WorkBuddy, as in the US app:
+`claude-agent-sdk` is in requirements and installed in the venv.
+
+## Backtest of the next-print model (2 Oct 2026)
+
+Out of sample since 1990, 415 prints: error 5.5% below no change (Clark–West
+p < 0.001); direction right 59% of the months the rate moved, against a 51%
+base rate; 70% and 90% bands held 71.6% and 90.6% of prints. The edge is in
+the first half of the sample and around turning points: +0.9% since 2016,
+when every input is live. As in the US, say so; do not oversell.
 
 ## 17. Build order
 

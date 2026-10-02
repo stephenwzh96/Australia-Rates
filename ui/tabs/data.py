@@ -32,6 +32,7 @@ def render(ctx: Ctx) -> None:
         _market(ctx)
         _rba(ctx)
         _calendar(ctx)
+        _board(ctx)
     with right:
         _labour(ctx)
         _cpi(ctx)
@@ -97,7 +98,10 @@ def _rba(ctx: Ctx) -> None:
             C.note(f"{label} · {obs[-1].value:.1f}" if obs else f"{label} · —")
             if obs:
                 st.altair_chart(charts.sparkline(obs, None, False, P), width="stretch", theme=None)
-    for name, code in (("H4 — wages and prices", "h4"), ("H5 — labour force", "h5")):
+    for name, code in (("D1 — credit aggregates", "d1"), ("G3 — inflation expectations", "g3"),
+                       ("H1 — GDP and income", "h1"), ("H2 — household finances", "h2"),
+                       ("H3 — surveys and approvals", "h3"), ("H4 — wages and prices", "h4"),
+                       ("H5 — labour force", "h5")):
         t = src.rba_table(code)
         last = max((s[-1][0] for s in t.values() if s), default=None)
         C.data_source_header(name, bool(t), f"{len(t)} series · latest {last:%b %Y}"
@@ -107,6 +111,26 @@ def _rba(ctx: Ctx) -> None:
                 [[s.code, s.label, s.discontinued.isoformat()] for s in rba.CATALOGUE if not s.live])
         C.note("The RBA retired its OIS series in December 2022 — why the bill basis on the Curve "
                "tab is measured against the IB strip, which is an OIS curve, and a tradeable one.")
+
+
+def _board(ctx: Ctx) -> None:
+    """The Board's own pages, and the settlements this app keeps."""
+    P = ctx.P
+    C.sub("RBA Board and ASX history")
+    board = src.fetch_board()
+    C.data_source_header("Monetary Policy Board (rba.gov.au)", bool(board),
+                         f"{len(board)} members seated on the roster" if board else
+                         "unavailable — the roster keeps its last seating", P)
+    votes = src.fetch_board_votes(ctx.as_of)
+    shown = [d for d in votes if d.votes]
+    C.data_source_header("Decision statements (rba.gov.au)", bool(votes),
+                         f"{len(votes)} decisions since Mar 2025, {len(shown)} with a published "
+                         f"vote · latest {votes[-1].when:%d %b %Y}" if votes else "unavailable", P)
+    for kind, label in (("ib", "IB"), ("ir", "IR")):
+        first, days = src.settlement_coverage(kind)
+        C.data_source_header(f"ASX {label} settlements kept", days > 0,
+                             f"{days} day{'' if days == 1 else 's'} since {first:%d %b %Y}"
+                             if first else "none yet — filed each day the app is opened", P)
 
 
 def _calendar(ctx: Ctx) -> None:
