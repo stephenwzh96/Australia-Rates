@@ -21,7 +21,7 @@ def _or(value, default):
 
 #: Widget keys that belong to one meeting's analysis and must not survive a
 #: switch to another (the tabs namespace most keys by meeting; these are not).
-PER_MEETING_WIDGET_KEYS = ("smp_read_editor",)
+from ui.tabs.smp import PER_MEETING_WIDGET_KEYS  # noqa: E402
 
 
 def _switch_meeting(key: str, pending_contract: str | None = None) -> None:

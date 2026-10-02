@@ -21,7 +21,8 @@ from state import store
 from ui import components as C
 from ui import sidebar, verdict
 from ui.context import Ctx, Market
-from ui.tabs import curve, data, growth, inflation, labour, macro, path, releases, sizing, votes
+from ui.tabs import (curve, data, growth, inflation, labour, macro, path, releases, sizing,
+                     smp, votes)
 from ui.theme import active as active_palette
 
 st.set_page_config(page_title="RBA event pricing", page_icon="◷", layout="wide")
@@ -33,6 +34,7 @@ SECTIONS = {
     "Path": path.render,
     "Releases": releases.render,
     "Vote count": votes.render,
+    "SMP & forecasts": smp.render,
     "Macro": macro.render,
     "Labour": labour.render,
     "Inflation": inflation.render,

@@ -26,7 +26,9 @@ import plotly.graph_objects as go
 
 from core import cpi_monthly as cpi_monthly_mod
 from core import growth as growth_mod
+from core import dots as dots_mod
 from core import labor
+from core import taylor_heatmap as th
 from core import path as pathmod
 from core import pricing, sizing
 from core.pricing import Side
@@ -3866,3 +3868,289 @@ def spending_bubbles(snap, p: Palette, height: int = 600,
                      title=dict(text="<b>Month-over-Month</b>", standoff=6,
                                 font=dict(size=13, color=p.ink_secondary)))
     return fig
+
+
+# ---------------------------------------------------------------------------
+# SMP & forecasts: named dots, Taylor grid and heatmap, cash-rate path
+# ---------------------------------------------------------------------------
+
+def named_dots(panel, p: Palette, title: str) -> alt.LayerChart:
+    """One horizon of the named dot plot."""
+    if not panel.ok:
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()),
+                      p, 160)
+
+    rows = []
+    for lv in panel.levels:
+        n = len(lv.dots)
+        for i, d in enumerate(lv.dots):
+            rows.append({
+                "x": i - (n - 1) / 2,
+                "rate": d.rate,
+                "label": d.label,
+                "name": d.name,
+                "role": d.role or "Member",
+                "group": d.group,
+                "ink": "voting" if d.votes else "quiet",
+                "dot": dots_mod.fmt(d.rate) + "%",
+                "mark": "—" if d.score is None else f"{d.score:.1f}",
+            })
+    df = pd.DataFrame(rows)
+
+    fill = alt.Scale(domain=list(dots_mod.GROUPS),
+                     range=[p.negative, p.accent, p.positive])
+    lo, hi = panel.span
+    floor_, ceil_ = math.floor(lo * 2) / 2, math.ceil(hi * 2) / 2
+    ticks = [round(floor_ + 0.25 * i, 3)
+             for i in range(int(round((ceil_ - floor_) / 0.25)) + 1)]
+    y_dom = [floor_ - 0.06, ceil_ + 0.10]
+    half = (panel.widest - 1) / 2
+    longest = max(len(d.label) for lv in panel.levels for d in lv.dots)
+    name_size = alt.expr(f"clamp(0.72 * (width / {panel.widest + 0.4:.1f})"
+                         f" / {longest * 0.51:.2f}, 7, 10)")
+
+    y_enc = alt.Y("rate:Q", scale=alt.Scale(domain=y_dom, nice=False),
+                  axis=alt.Axis(title=None, values=ticks, ticks=False,
+                                domain=False, grid=True,
+                                labelExpr="format(datum.value, '.2f') + '%'"))
+    x_enc = alt.X("x:Q", scale=alt.Scale(domain=[-half - 0.7, half + 0.7],
+                                         nice=False),
+                  axis=None)
+    tips = [alt.Tooltip("name:N", title="member"),
+            alt.Tooltip("role:N", title="seat"),
+            alt.Tooltip("group:N", title="in " + panel.label),
+            alt.Tooltip("dot:N", title="dot"),
+            alt.Tooltip("mark:N", title="hawk–dove")]
+
+    disc = alt.Chart(df).mark_point(
+        filled=True, size=330, opacity=0.5).encode(
+        x=x_enc, y=y_enc, tooltip=tips,
+        color=alt.Color("group:N", scale=fill, title=None,
+                        legend=alt.Legend(orient="none", legendX=0, legendY=-16,
+                                          direction="horizontal",
+                                          symbolType="circle", symbolSize=130,
+                                          symbolOpacity=0.5, labelFontSize=10)))
+    def _names(kind: str, colour: str, weight: str) -> alt.Chart:
+        return alt.Chart(df).transform_filter(
+            alt.datum.ink == kind).mark_text(
+            fontSize=name_size, fontWeight=weight, color=colour,
+            baseline="middle"
+        ).encode(x=x_enc, y=y_enc, text="label:N", tooltip=tips)
+
+    chart = alt.layer(
+        disc,
+        _names("voting", p.ink, "bold"),
+        _names("quiet", p.ink_secondary, "normal"),
+    ).properties(
+        title=alt.TitleParams(title, anchor="start", offset=30, fontSize=TITLE_SIZE,
+                              fontWeight=TITLE_WEIGHT, color=p.ink, font=FONT),
+        padding={"left": 8, "top": 10, "right": 14, "bottom": 6},
+    )
+    height = int(min(460, max(215, 150 * (y_dom[1] - y_dom[0]) + 95)))
+    return _apply(chart, p, height)
+
+
+_TAYLOR_CUT = "#8fa9d4"       # saturated cut, sampled from the source's blue block
+_TAYLOR_HIKE = "#dba0a6"      # saturated hike, sampled from the source's pink block
+_TAYLOR_CUT_DARK = "#3f5c8a"
+_TAYLOR_HIKE_DARK = "#8a4a53"
+
+
+def _taylor_targets(p: Palette) -> tuple[str, str]:
+    """(cut, hike) fills at full saturation, for this theme."""
+    if p.mode == "dark":
+        return _TAYLOR_CUT_DARK, _TAYLOR_HIKE_DARK
+    return _TAYLOR_CUT, _TAYLOR_HIKE
+
+_TAYLOR_CAP_MOVES = 3.0
+
+
+def taylor_fill(cell, p: Palette) -> str:
+    """Cell background: surface at the hold band, saturating with the gap."""
+    if cell.stance == "hold":
+        return "transparent"
+    t = min(1.0, (abs(cell.moves) - 0.5) / _TAYLOR_CAP_MOVES)
+    cut, hike = _taylor_targets(p)
+    return _lerp_hex(p.surface, cut if cell.stance == "cut" else hike,
+                     0.45 + 0.55 * t)
+
+
+def taylor_grid_table(grid, p: Palette) -> str:
+    """The balanced-approach rule grid as HTML, matching the source's layout."""
+    boxed = {(a.core_pce, a.unemployment): a.label
+             for a in grid.anchors if a.cell is not None}
+
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    head = "".join(f"<th class='h'>{u:.1f}%</th>" for u in grid.unemployment_axis)
+    body: list[str] = []
+    for pce, row in zip(grid.core_pce_axis, grid.rows):
+        cells: list[str] = []
+        for cell in row:
+            fill = taylor_fill(cell, p)
+            if fill == "transparent":
+                style = f"color:{p.ink};"
+            else:
+                style = f"color:{_readable_ink(fill)};background:{fill};"
+            label = boxed.get((cell.core_pce, cell.unemployment))
+            klass = "c box" if label else "c"
+            if label:
+                outline = p.ink if fill == "transparent" else _readable_ink(fill)
+                style += f"box-shadow:inset 0 0 0 1.5px {outline};"
+            move = ("no change" if cell.stance == "hold"
+                    else f"{abs(cell.moves):.1f} x 25bp {cell.stance}")
+            tip = (f"trimmed mean {cell.core_pce:.1f}%, unemployment {cell.unemployment:.1f}%"
+                   f" -> {cell.label} ({move}"
+                   f"{', ' + esc(label) if label else ''})")
+            cells.append(f"<td class='{klass}' title='{esc(tip)}' "
+                         f"style='{style}'>{cell.label}</td>")
+        body.append(f"<tr><td class='rl'>{pce:.1f}%</td>{''.join(cells)}</tr>")
+
+    cut_swatch, hike_swatch = _taylor_targets(p)
+    legend = (
+        f"<div class='fomc-heatmap-legend'>"
+        f"<span class='g' style='background:{cut_swatch}'></span>"
+        f"<span class='gl'>&nbsp;Cut</span>"
+        f"<span class='g gt' style='background:{hike_swatch}'></span>"
+        f"<span class='gl'>&nbsp;Hike</span>"
+        f"<span class='gt'>&nbsp;· unshaded = within half a 25bp move of "
+        f"{grid.band.current_rate:.2f}%, so the rule implies no change"
+        f"{' · boxed = ' + esc(', '.join(sorted(set(boxed.values())))) if boxed else ''}"
+        f"</span></div>")
+
+    return (
+        f"<table class='fomc-taylor'>"
+        f"<thead><tr><th class='rl'>Trimmed mean</th>"
+        f"<th class='ax' colspan='{len(grid.unemployment_axis)}'>Unemployment Rate</th></tr>"
+        f"<tr><th class='rl'></th>{head}</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>{legend}")
+
+
+_TR_TEAL = "#0f6e8c"           # sampled from the Atlanta Fed's darkest cell
+_TR_TEAL_DARK = "#1391b4"      # lifted for the dark theme's lower surface
+_TR_WARM = "#c74817"
+_TR_WARM_DARK = "#e07a4e"
+
+
+def _tr_targets(p: Palette) -> tuple[str, str]:
+    """(rule above policy, rule below policy) at full saturation."""
+    if p.mode == "dark":
+        return _TR_TEAL_DARK, _TR_WARM_DARK
+    return _TR_TEAL, _TR_WARM
+
+
+def taylor_heat_fill(band: int, p: Palette) -> str:
+    """Fill for one of the seven published shading bands."""
+    above, below = _tr_targets(p)
+    distance = th.NEUTRAL_BAND - band          # + = rule above policy
+    if distance == 0:
+        return "transparent"
+    t = min(1.0, abs(distance) / th.NEUTRAL_BAND)
+    return _lerp_hex(p.surface, above if distance > 0 else below, 0.40 + 0.60 * t)
+
+
+def taylor_heatmap_table(heat, p: Palette) -> str:
+    """The computed cash-rate prescription heatmap as HTML, in the Atlanta Fed's layout."""
+    if not heat.ok:
+        return ""
+
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    head = "".join(f"<th class='h' title='{esc(g.gloss)}'>{esc(g.label)}</th>"
+                   for g in th.GAP_COLUMNS)
+
+    body: list[str] = []
+    for row in heat.rows:
+        cells: list[str] = []
+        for cell in row:
+            fill = taylor_heat_fill(cell.band, p)
+            style = (f"color:{p.ink};" if fill == "transparent"
+                     else f"color:{_readable_ink(fill)};background:{fill};")
+            tip = (f"r* {cell.r_star_value:.2f}% · {cell.gap.label}, unemployment gap "
+                   f"{cell.gap_value:+.2f}pp → {cell.rate:.2f}%, "
+                   f"{cell.diff_bp:+.0f}bp vs the {heat.funds_rate:.2f}% cash rate "
+                   f"({th.BAND_LABELS[cell.band]})")
+            cells.append(f"<td class='c' title='{esc(tip)}' style='{style}'>"
+                         f"{cell.label}</td>")
+        spec = row[0].r_star
+        body.append(f"<tr><td class='nm' title='{esc(spec.gloss)}'>"
+                    f"{esc(spec.label)}</td>{''.join(cells)}</tr>")
+
+    stops = "".join(
+        f"<span class='g' style='background:{taylor_heat_fill(b, p)}"
+        f"{';outline:1px solid ' + p.grid if taylor_heat_fill(b, p) == 'transparent' else ''}'"
+        f" title='{esc(th.BAND_LABELS[b])}'></span>"
+        for b in range(th.BAND_COUNT - 1, -1, -1))
+    legend = (
+        f"<div class='fomc-heatmap-legend'>"
+        f"<span class='gl'>policy above the rule</span>{stops}"
+        f"<span class='gl'>policy below the rule</span>"
+        f"<span class='gt'>&nbsp;· bands of 50bp either side of "
+        f"{heat.funds_rate:.2f}%, the Atlanta Fed's shading scheme</span></div>")
+
+    return (f"<table class='fomc-trheat'>"
+            f"<thead><tr><th class='nm'>Real neutral rate (r*)</th>"
+            f"<th class='ax' colspan='{len(th.GAP_COLUMNS)}'>"
+            f"NAIRU (u*) the unemployment gap is measured against</th></tr>"
+            f"<tr><th class='nm'></th>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table>{legend}")
+
+
+def smp_cash_path(points, p: Palette, latest_label: str, prior_label: str,
+                  height: int = 300) -> alt.LayerChart:
+    """The Statement's cash-rate assumption by horizon: the previous round
+    hollow, the latest filled, the IB strip today as a diamond, and a rule from
+    the previous round to the latest showing the revision -- the role the US
+    tab's published dot plot plays, for a central bank that publishes no dots."""
+    rows = []
+    for pt in points:
+        for kind, value in ((prior_label or "previous", pt.prior), (latest_label, pt.latest),
+                            ("IB strip today", pt.market)):
+            if value is not None:
+                rows.append({"horizon": pt.horizon, "rate": value, "kind": kind})
+    if not rows:
+        return _apply(alt.layer(alt.Chart(pd.DataFrame({"x": []})).mark_point()), p, 160)
+    df = pd.DataFrame(rows)
+    order = [pt.horizon for pt in points]
+    kinds = [k for k in (prior_label or "previous", latest_label, "IB strip today")
+             if k in set(df["kind"])]
+    colours = {prior_label or "previous": p.muted, latest_label: p.ink,
+               "IB strip today": p.accent}
+    shapes = {prior_label or "previous": "circle", latest_label: "circle",
+              "IB strip today": "diamond"}
+    x = alt.X("horizon:N", sort=order, title=None,
+              axis=alt.Axis(labelAngle=0, labelFontSize=10))
+    lo, hi = float(df["rate"].min()), float(df["rate"].max())
+    domain = alt.Scale(domain=[math.floor(lo * 4) / 4 - 0.25, math.ceil(hi * 4) / 4 + 0.25],
+                       zero=False, nice=False)
+    y = alt.Y("rate:Q", title="Cash rate (%)", scale=domain, axis=alt.Axis(format=".2f"))
+    seg = []
+    for pt in points:
+        if pt.prior is not None and pt.latest is not None:
+            seg.append({"horizon": pt.horizon, "a": pt.prior, "b": pt.latest,
+                        "dir": "hawkish" if pt.latest > pt.prior else "dovish"
+                        if pt.latest < pt.prior else "flat"})
+    layers = []
+    if seg:
+        layers.append(alt.Chart(pd.DataFrame(seg)).mark_rule(strokeWidth=2.2, opacity=0.8).encode(
+            x=x, y=alt.Y("a:Q", scale=domain, title="Cash rate (%)"), y2="b:Q",
+            color=alt.Color("dir:N", scale=alt.Scale(domain=["hawkish", "dovish", "flat"],
+                                                     range=[p.negative, p.positive, p.muted]),
+                            legend=None)))
+    tips = [alt.Tooltip("kind:N", title="series"), alt.Tooltip("horizon:N", title="horizon"),
+            alt.Tooltip("rate:Q", title="cash rate", format=".2f")]
+    for k in kinds:
+        sub = df[df["kind"] == k]
+        filled = k != (prior_label or "previous")
+        layers.append(alt.Chart(sub).mark_point(
+            filled=filled, size=150 if k == "IB strip today" else 120, shape=shapes[k],
+            strokeWidth=1.8, color=colours[k], opacity=1.0).encode(x=x, y=y, tooltip=tips))
+        if k == latest_label:
+            layers.append(alt.Chart(sub).mark_text(dy=-12, fontSize=10, fontWeight=600,
+                                                   color=p.ink).encode(
+                x=x, y=y, text=alt.Text("rate:Q", format=".1f")))
+    return _apply(alt.layer(*layers), p, height)
