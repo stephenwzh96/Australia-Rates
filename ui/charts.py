@@ -1613,7 +1613,9 @@ def macro_dots(readings, p: Palette, height: int = 560) -> alt.LayerChart:
 
 
 def macro_momentum(history, p: Palette, height: int = 340,
-                   window_start: "date | None" = None) -> alt.LayerChart:
+                   window_start: "date | None" = None,
+                   recessions: "list[tuple[date, float]] | None" = None,
+                   ) -> alt.LayerChart:
     """The 'Momentum Signal': each group's contribution to the Total as a
     stacked bar per quarter, with the Total itself as a line on top.
 
@@ -1642,6 +1644,14 @@ def macro_momentum(history, p: Palette, height: int = 340,
     present = [g for g in MACRO_GROUP_ORDER if g in set(df["group"])]
     grp_scale = alt.Scale(domain=present, range=[gcol[g] for g in present])
 
+    bands = None
+    if recessions:
+        rec = [(d, v) for d, v in recessions if window_start is None or d >= window_start]
+        rdf = _gs_rec_bands(rec)
+        if not rdf.empty:
+            bands = (alt.Chart(rdf).mark_rect(opacity=0.12, color="#7f7f7f")
+                     .encode(x="start:T", x2="end:T"))
+
     zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
         color=p.baseline, strokeWidth=1).encode(y="y:Q")
     bars = alt.Chart(df).mark_bar().encode(
@@ -1660,7 +1670,8 @@ def macro_momentum(history, p: Palette, height: int = 340,
         x=x_enc, y="total:Q",
         tooltip=[alt.Tooltip("month:T", title="quarter", format="%b %Y"),
                  alt.Tooltip("total:Q", format="+.2f", title="Total z")])
-    return _apply(alt.layer(zero, bars, line), p, height)
+    layers = ([bands] if bands is not None else []) + [zero, bars, line]
+    return _apply(alt.layer(*layers), p, height)
 
 
 # ---------------------------------------------------------------------------

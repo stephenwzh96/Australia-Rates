@@ -215,3 +215,17 @@ def test_momentum_last_bar_matches_the_table_over_the_wired_subset():
     for g in wired:
         assert g in last.by_group
         assert last.by_group[g] == pytest.approx(grp[g], abs=1e-6)
+
+
+def test_quarterly_survey_averages_are_not_smoothed_again():
+    from core import macro
+    q = [(date(2025, 3, 31), 4.0), (date(2025, 6, 30), 5.0), (date(2025, 9, 30), 6.0)]
+    assert [v for _, v in macro.transform("ma3", q)] == [4.0, 5.0, 6.0]
+
+
+def test_own_baseline_needs_most_of_the_window():
+    from core import macro
+    monthly = [(date(2000 + i // 12, i % 12 + 1, 1), float(i % 5)) for i in range(252)]
+    mean, sd = macro.own_baseline(monthly)
+    assert abs(mean - 2.0) < 0.05 and sd > 1
+    assert macro.own_baseline(monthly[-100:]) is None

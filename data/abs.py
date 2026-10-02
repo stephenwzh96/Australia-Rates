@@ -584,3 +584,77 @@ def cpi_monthly_analytical(measure: str = "Percentage Change from Corresponding 
                            ) -> dict[str, list[Observation]]:
     """Monthly trimmed mean and ex-volatiles measures. April 2024 onwards."""
     return _by_name(cpi_workbook(CPI_ANALYTICAL_M), measure)[0]
+
+
+# --------------------------------------------------------------------------
+# Other releases, read the same way
+# --------------------------------------------------------------------------
+
+APPROVALS_LANDING = ("https://www.abs.gov.au/statistics/industry/building-and-construction/"
+                     "building-approvals-australia/latest-release")
+LENDING_LANDING = ("https://www.abs.gov.au/statistics/economy/finance/lending-indicators/"
+                   "latest-release")
+APPROVALS_DWELLINGS = "8731006.xlsx"   # dwelling units approved, by sector, Australia
+LENDING_HOUSEHOLDS = "560101.xlsx"      # households' new housing loan commitments
+
+TOTAL_DWELLINGS = "Total number of dwelling units ;  Total (Type of Building) ;  Total Sectors ;"
+PRIVATE_HOUSES = "Total number of dwelling units ;  Houses ;  Private Sector ;"
+NEW_HOME_LOANS = ("Households ;  Housing Finance ;  Total dwellings excluding refinancing ;  "
+                  "New loan commitments ;  Value ;")
+
+
+@lru_cache(maxsize=16)
+def _release_href(landing: str, fname: str) -> str | None:
+    """The current file's full URL as the landing page links it. Read rather
+    than built: a release's slug is a month (`aug-2026`) for some and a
+    quarter (`jun-quarter-2026`) for others, and Lending Indicators moved
+    from one to the other."""
+    try:
+        r = requests.get(landing, headers=HEADERS, timeout=TIMEOUT)
+        r.raise_for_status()
+    except requests.RequestException:
+        return None
+    m = re.search(r'href="([^"]*/([a-z0-9-]+)/' + re.escape(fname) + ')"', r.text)
+    return ("https://www.abs.gov.au" + m.group(1)) if m else None
+
+
+def release_workbook(landing: str, fname: str) -> Workbook:
+    """Any ABS release's workbook, behind the release-keyed disk cache. Never
+    raises; offline it serves the newest cached period."""
+    href = _release_href(landing, fname)
+    period = href.rsplit("/", 2)[-2] if href else None
+    if period is None:
+        for row in sorted(cache.read_json(f"abs-index-{fname}"), reverse=True,
+                          key=lambda r: r.get("period", "")):
+            cached = _from_cache(_cache_key(fname, row.get("period", "")), row.get("period", ""))
+            if cached.ok:
+                return cached
+        return Workbook("", {}, {})
+    key = _cache_key(fname, period)
+    cached = _from_cache(key, period)
+    if cached.ok:
+        return cached
+    blob = _fetch_workbook(href)
+    if blob is None:
+        return Workbook(period, {}, {})
+    parsed = parse_workbook(blob, period)
+    if parsed.ok:
+        _to_cache(key, parsed)
+        cache.write_json(f"abs-index-{fname}", [{"period": period}])
+    return parsed
+
+
+def housing_series() -> dict[str, list[Observation]]:
+    """Seasonally adjusted dwelling approvals (total, private houses) and new
+    housing loan commitments, keyed by the `core.macro` indicator they feed."""
+    out: dict[str, list[Observation]] = {}
+    sa = "Seasonally Adjusted"
+    approvals = release_workbook(APPROVALS_LANDING, APPROVALS_DWELLINGS)
+    lending = release_workbook(LENDING_LANDING, LENDING_HOUSEHOLDS)
+    for key, wb, header in (("building_approvals", approvals, TOTAL_DWELLINGS),
+                            ("private_building_approvals", approvals, PRIVATE_HOUSES),
+                            ("home_loans", lending, NEW_HOME_LOANS)):
+        obs = wb.columns.get((header, sa))
+        if obs:
+            out[key] = obs
+    return out

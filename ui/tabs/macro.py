@@ -34,14 +34,17 @@ def render(ctx: Ctx) -> None:
                         "sign-flipped. Group = mean of members; Total = mean of every scored "
                         "member. μ and σ are the Westpac CIO slide's published 2000–2020 mean "
                         "and a σ backed out of its printed z; a wired feed moves the latest "
-                        "reading forward and re-scores it against that same μ/σ.",
+                        "reading forward and re-scores it against that same μ/σ — except the "
+                        "rows marked §, whose public series is on another scale and is scored "
+                        "on its own 2000–2020 μ/σ.",
                         "see core.macro", "macro-z"))
     with ctl:
-        mode = C.choice("Readings", (SLIDE, LIVE), default=SLIDE, key="macro_read_mode",
+        mode = C.choice("Readings", (LIVE, SLIDE), default=LIVE, key="macro_read_mode",
                         label_visibility="collapsed",
-                        help="Slide reproduces the Westpac CIO picture row for row. Live pulls "
-                             "the latest print for every wired series; commercial and un-keyed "
-                             "rows stay on the slide either way.")
+                        help="Live pulls the latest print for every wired series (the US "
+                             "tab's only mode). Slide reproduces the Westpac CIO picture row for "
+                             "row, for reconciling against it; the two commercial rows and the "
+                             "two with no free feed stay on the slide either way.")
     live = mode == LIVE
     readings = macro_mod.dashboard(bundle if live else None)
     groups = macro_mod.groups(readings)
@@ -59,7 +62,7 @@ def render(ctx: Ctx) -> None:
               f"{sum(1 for k in macro_mod.BY_KEY if k in bundle)} rows have a keyless live feed "
               "(switch to Live).")
 
-    chart_col, table_col = st.columns([0.8, 1.25], gap="large")
+    chart_col, table_col = st.columns([0.74, 1.31], gap="large")
     with chart_col:
         C.legend([("Stronger than 2000–2020 average", P.positive), ("Weaker", P.negative)])
         st.altair_chart(charts.macro_dots(readings, P), width="stretch", theme=None)
@@ -77,19 +80,26 @@ def render(ctx: Ctx) -> None:
     hist = macro_mod.momentum_history(bundle, date(2000, 1, 1))
     if hist:
         st.altair_chart(charts.macro_momentum(hist, P, window_start=C.window_start(window,
-                                                                                    ctx.as_of)),
+                                                                                    ctx.as_of),
+                                              recessions=src.au_recessions()),
                         width="stretch", theme=None)
     else:
         st.info("No wired histories yet — the momentum signal needs at least one live series.")
 
 
-def _period(d: date | None) -> str:
-    return "—" if d is None else f"{d:%b %y}"
+def _period(d: date | None, freq: str = "M") -> str:
+    """The month (or quarter) a reading describes, so a stale input shows."""
+    if d is None:
+        return "—"
+    return f"Q{(d.month - 1) // 3 + 1} {d:%y}" if freq == "Q" else f"{d:%b %y}"
 
 
-def _num(v: float | None) -> str:
-    # 4 significant figures keeps the slide's varying precision (0.813, -0.0193, 43.7).
-    return "—" if v is None else f"{v:.4g}"
+def _num(v: float | None, live: bool) -> str:
+    """Live: two decimals, as the US table. Slide: 4 significant figures, which
+    keeps the slide's own varying precision (0.813, -0.0193, 43.7)."""
+    if v is None:
+        return "—"
+    return f"{v:.2f}" if live else f"{v:.4g}"
 
 
 def _table(readings, groups, total, live: bool, P) -> None:
@@ -113,17 +123,21 @@ def _table(readings, groups, total, live: bool, P) -> None:
             if r.indicator.group != group:
                 continue
             ind = r.indicator
-            mark = " ‡" if ind.commercial else (" †" if live and not r.live else "")
+            mark = (" ‡" if ind.commercial else " †" if live and not r.live
+                    else " §" if live and ind.own_baseline else "")
             colours[(len(rows), 2)] = P.muted
             rows.append([f'<span class="fomc-indent">{ind.label}{mark}</span>',
-                         ind.transform_label, _period(r.as_of if live else ind.seed_asof),
-                         _num(r.last), _num(r.hist_mean), zcell(r.z)])
+                         ind.transform_label,
+                         _period(r.as_of, r.freq) if live else _period(ind.seed_asof),
+                         _num(r.last, live), _num(r.hist_mean, live), zcell(r.z)])
     marks.append(len(rows))
     rows.append(["Total", "", "", "", "", zcell(total)])
     C.table(["Indicator", "Transform", "Period", "Last", "Mean 00–20", "Z"], rows,
             numeric=(3, 4, 5), mark_rows=marks, row_bg=bg, colours=colours, nowrap=True)
-    C.note("‡ commercial series with no free feed (ANZ-Indeed job ads, Melbourne Institute "
-           "inflation expectations, Westpac-MI sentiment, ANZ-Roy Morgan confidence, NAB "
-           "business conditions), seeded from the slide; paste a history in "
-           "meetings/_manual_series.json under macro:<key> to update."
-           + (" † public series not yet wired, still on the slide reading." if live else ""))
+    C.note("‡ commercial, no free feed (ANZ-Indeed job ads, ANZ-Roy Morgan confidence): "
+           "seeded from the slide; paste a history in meetings/_manual_series.json under "
+           "macro:<key> to update. Westpac-MI sentiment and NAB conditions are read from RBA "
+           "H3, Melbourne Institute expectations from G3, credit from D1."
+           + (" † no free feed in the slide's form (CoreLogic values, the HSI in volume "
+              "terms), still on the slide reading. § scored on the public series' own "
+              "2000–2020 μ/σ — its scale differs from the slide's." if live else ""))

@@ -17,11 +17,12 @@ mean of the five group means would be -0.014).
 
 WHY A SEED, AND WHAT LIVE DATA DOES
 -----------------------------------
-Australia has no FRED. Of the 23 series the slide uses, five are commercial
-with no free feed (ANZ-Indeed job ads, the Melbourne Institute inflation-
-expectations survey, Westpac-MI consumer sentiment, ANZ-Roy Morgan consumer
-confidence, the NAB business survey) and several more are ABS workbooks not yet
-wired. So the baseline mean and standard deviation for every indicator are
+Australia has no FRED. Of the 23 series the slide uses, two are commercial
+with no free feed (ANZ-Indeed job ads, ANZ-Roy Morgan consumer confidence).
+Three more that look commercial are republished by the RBA -- Westpac-MI
+sentiment and NAB business conditions in table H3, the Melbourne Institute
+inflation expectations in G3 -- and are read from there; two (CoreLogic home
+values, the HSI in volume terms) have no free feed in the slide's form. So the baseline mean and standard deviation for every indicator are
 SEEDED from the published slide -- ``seed_mean`` is the printed "Historical Mean
 (2000-2020)" and ``seed_sd`` is backed out from the printed z-score as
 ``|current - mean| / |z|``. That makes the table reproduce the slide exactly
@@ -80,6 +81,10 @@ class Indicator:
     bad_news: bool = False      # flip the z so +z = stronger economy
     auto: bool = False          # a wired feed exists (else seed / paste only)
     commercial: bool = False    # no free feed exists at all
+    # Score the live series against ITS OWN 2000-2020 mean/sd rather than the
+    # slide's: for a row whose public series is on a different scale or level
+    # from the one the slide used (see the row's source_label).
+    own_baseline: bool = False
     source_label: str = ""      # shown in the Data tab / tooltip
     note: str = ""
 
@@ -120,9 +125,10 @@ INDICATORS: tuple[Indicator, ...] = (
               source_label="ABS CPI, trimmed mean SA (q/q % change)"),
     Indicator("mi_inflation_expectations", "MI Inflation Expectations", "Inflation",
               "3m m.a.", 4.43, _sd(5.26, 4.43, 0.947), 5.26, _ASOF,
-              transform="ma3", commercial=True,
-              source_label="Melbourne Institute Survey of Consumer Inflationary "
-                           "Expectations (commercial -- paste to update)"),
+              transform="ma3", auto=True,
+              source_label="Melbourne Institute consumer inflation expectations, as "
+                           "RBA table G3 republishes it (GCONEXP) -- a quarterly average of "
+                           "the monthly survey, which IS its 3m m.a. at the quarter's end"),
     Indicator("wpi", "WPI QoQ", "Inflation",
               "QoQ", 0.785, _sd(0.754, 0.785, -0.146), 0.754, _ASOF,
               transform="pass_q", auto=True,
@@ -134,12 +140,16 @@ INDICATORS: tuple[Indicator, ...] = (
     # -- Housing ---------------------------------------------------------
     Indicator("building_approvals", "Building Approvals MoM", "Housing",
               "MoM (3m m.a.)", 10.4, _sd(43.7, 10.4, 0.844), 43.7, _ASOF,
-              transform="mom3",
-              source_label="ABS Building Approvals, total dwellings SA (m/m %, 3m m.a.) -- paste to update"),
-    Indicator("private_building_approvals", "Private Sector Building Approvals MoM",
+              transform="mom3", auto=True, own_baseline=True,
+              source_label="ABS Building Approvals table 6, total dwelling units SA (m/m %, "
+                           "3m m.a.). The slide's 43.7 / mean 10.4 is not reproducible from "
+                           "the published series (its 2000-2020 m/m 3m m.a. averages 0.4, "
+                           "sd 3.9), so the row is scored on that own baseline"),
+    Indicator("private_building_approvals", "Private Building Approvals MoM",
               "Housing", "MoM (3m m.a.)", 4.15, _sd(12.1, 4.15, 0.245), 12.1, _ASOF,
-              transform="mom3",
-              source_label="ABS Building Approvals, private sector houses SA (m/m %, 3m m.a.) -- paste to update"),
+              transform="mom3", auto=True, own_baseline=True,
+              source_label="ABS Building Approvals table 6, private sector houses SA (m/m %, "
+                           "3m m.a.), scored on its own 2000-2020 baseline as the total is"),
     Indicator("house_prices", "House Prices Annualised", "Housing",
               "Ann. (3m/3m m.a.)", 5.09, _sd(-3.26, 5.09, -1.261), -3.26, _ASOF,
               transform="ann_3m3m",
@@ -148,14 +158,15 @@ INDICATORS: tuple[Indicator, ...] = (
                            "so this stays on the seed -- paste to update"),
     Indicator("home_loans", "Home Loans QoQ", "Housing",
               "QoQ", 1.14, _sd(-5.22, 1.14, -1.118), -5.22, _ASOF,
-              transform="qoq_lvl",
-              source_label="ABS Lending Indicators, new housing commitments value SA (q/q % change) -- paste to update"),
+              transform="qoq_lvl", auto=True,
+              source_label="ABS Lending Indicators table 1, households' new housing loan "
+                           "commitments excl. refinancing, value SA (q/q % change)"),
     # -- Consumer ---------------------------------------------------------
     Indicator("household_consumption", "Household Consumption QoQ", "Consumer",
               "QoQ", 0.765, _sd(0.509, 0.765, -0.472), 0.509, _ASOF,
               transform="pass_q", auto=True,
               source_label="ABS National Accounts, household final consumption CVM SA (q/q % change)"),
-    Indicator("household_spending", "Household Spending Indicator Annualised",
+    Indicator("household_spending", "Household Spending Ind. Annualised",
               "Consumer", "Ann. (3m/3m m.a.)", 3.18, _sd(4.07, 3.18, 0.231), 4.07, _ASOF,
               transform="ann_3m3m",
               source_label="ABS Monthly Household Spending Indicator, total CVM SA "
@@ -164,9 +175,9 @@ INDICATORS: tuple[Indicator, ...] = (
                            "slide reading, so this row stays on the seed -- paste CVM to update"),
     Indicator("westpac_mi_sentiment", "Westpac-MI Consumer Sentiment", "Consumer",
               "3m/3m m.a.", 0.0524, _sd(-5.19, 0.0524, -0.945), -5.19, _ASOF,
-              transform="chg_3m3m", commercial=True,
-              source_label="Westpac-Melbourne Institute Consumer Sentiment Index "
-                           "(commercial -- paste to update)"),
+              transform="chg_3m3m", auto=True,
+              source_label="Westpac-Melbourne Institute Consumer Sentiment Index, as RBA "
+                           "table H3 republishes it (GICWMICS, 3m/3m m.a. change)"),
     Indicator("anz_rm_confidence", "ANZ-Roy Morgan Consumer Conf.", "Consumer",
               "3m/3m m.a.", 0.0616, _sd(10.2, 0.0616, 2.205), 10.2, _ASOF,
               transform="chg_3m3m", commercial=True,
@@ -195,15 +206,18 @@ INDICATORS: tuple[Indicator, ...] = (
               source_label="ABS National Accounts, GDP CVM SA (q/q % change)"),
     Indicator("private_credit", "Private Credit MoM", "Cyclical Economic Indicators",
               "MoM (3m m.a.)", 0.573, _sd(0.736, 0.573, 0.438), 0.736, _ASOF,
-              transform="ma3",
-              source_label="RBA total credit, m/m % growth (3m m.a.) -- the D1 "
-                           "DGFAC* series froze at the June 2019 EFS changeover, "
-                           "so this stays on the seed -- paste to update"),
+              transform="ma3", auto=True,
+              source_label="RBA table D1, total credit incl. select financial businesses, "
+                           "m/m % growth (DGFACNWM, 3m m.a.) -- the EFS-era successor to "
+                           "DGFACM, which froze at the June 2019 changeover"),
     Indicator("nab_business_conditions", "NAB Business Conditions",
               "Cyclical Economic Indicators",
               "3m m.a.", 6.18, _sd(3.22, 6.18, -0.367), 3.22, _ASOF,
-              transform="ma3", commercial=True,
-              source_label="NAB Monthly Business Survey, business conditions (commercial -- paste to update)"),
+              transform="ma3", auto=True, own_baseline=True,
+              source_label="NAB Monthly Business Survey business conditions, as RBA table "
+                           "H3 republishes it (GICNBC, 3m m.a.). H3's series sits about four "
+                           "points below the slide's, so it is scored on its own 2000-2020 "
+                           "baseline -- which puts its z within 0.1 of the slide's"),
 )
 
 BY_KEY = {i.key: i for i in INDICATORS}
@@ -253,6 +267,12 @@ def _quarterly(rows: list[tuple[date, float]]) -> list[tuple[date, float]]:
     return [(k, statistics.fmean(vs)) for k, vs in sorted(buckets.items())]
 
 
+def _is_quarterly(rows: list[tuple[date, float]]) -> bool:
+    """True when observations sit roughly a quarter apart."""
+    gaps = sorted((b[0] - a[0]).days for a, b in zip(rows, rows[1:]))
+    return bool(gaps) and gaps[len(gaps) // 2] > 60
+
+
 def _ma3(rows: list[tuple[date, float]]) -> list[tuple[date, float]]:
     out: list[tuple[date, float]] = []
     for i in range(2, len(rows)):
@@ -284,7 +304,9 @@ def transform(tag: str, raw: list[tuple[date, float]]) -> list[tuple[date, float
                 for a, b in zip(q, q[1:]) if a[1]]
 
     if tag == "ma3":
-        return _ma3(_monthly(rows))
+        # A quarterly series of monthly-survey averages is already the 3m m.a.
+        # at each quarter's end; smoothing it again would average 9 months.
+        return _quarterly(rows) if _is_quarterly(rows) else _ma3(_monthly(rows))
 
     m = _monthly(rows)
     ma = _ma3(m)
@@ -321,6 +343,7 @@ class Reading:
     z_prev: tuple[float | None, float | None] = (None, None)  # 3m, 6m back
     as_of: date | None = None
     live: bool = False
+    freq: str = "M"             # "Q" when the reading is a quarter's
 
     @property
     def ok(self) -> bool:
@@ -338,10 +361,14 @@ def assess(ind: Indicator,
            live: list[tuple[date, float]] | None = None) -> Reading:
     """One indicator. Uses the live/pasted series when it transforms cleanly,
     else the slide's seeded current reading. Either way the z is against the
-    seed mean/sd, so a live row and a seed row sit on the same axis."""
+    seed mean/sd, so a live row and a seed row sit on the same axis -- except
+    an `own_baseline` row, scored on its live series' own 2000-2020 window
+    when that window is at least three-quarters covered."""
     mean, sd = ind.seed_mean, ind.seed_sd
 
     pts = transform(ind.transform, live) if live else []
+    if pts and ind.own_baseline:
+        mean, sd = own_baseline(pts) or (mean, sd)
     if pts:
         d_last, v_last = pts[-1]
         by = dict(pts)
@@ -350,11 +377,21 @@ def assess(ind: Indicator,
         return Reading(
             ind, v_last, mean, sd, _z_of(v_last, mean, sd, ind.bad_news),
             (_z_of(p3, mean, sd, ind.bad_news), _z_of(p6, mean, sd, ind.bad_news)),
-            d_last, live=True)
+            d_last, live=True, freq="Q" if _is_quarterly(pts) else "M")
 
     return Reading(ind, ind.seed_current, mean, sd,
                    _z_of(ind.seed_current, mean, sd, ind.bad_news),
                    (None, None), ind.seed_asof, live=False)
+
+
+def own_baseline(pts: list[tuple[date, float]]) -> tuple[float, float] | None:
+    """(mean, sd) of a transformed series over the 2000-2020 window, or None
+    when less than three-quarters of the window is covered."""
+    window = [v for d, v in pts if BASELINE_START <= d <= BASELINE_END]
+    expected = 84 if _is_quarterly(pts) else 252
+    if len(window) < 0.75 * expected or len(window) < 2:
+        return None
+    return statistics.fmean(window), statistics.stdev(window)
 
 
 def dashboard(live_by_key: dict[str, list[tuple[date, float]]] | None = None
@@ -409,7 +446,7 @@ def momentum_history(hist_by_key: dict[str, list[tuple[date, float]]],
     indicator sits the chart out. Each indicator's transform is computed once
     over its whole history and the value used at point *t* is its most recent
     transform point at or before *t*, so a quarterly series holds its level
-    between prints. Scored against the same seed mean/sd as the table.
+    between prints. Scored against the same mean/sd as the table.
 
     The grid is quarter-aligned, but a final point is pinned to the freshest
     transform date across the wired set so the last bar reflects the same
@@ -417,15 +454,17 @@ def momentum_history(hist_by_key: dict[str, list[tuple[date, float]]],
     quarter stale). Each group contributes its members' mean z weighted by its
     share of the reporting count, so the bars stack up to the Total line.
     """
-    prepared: list[tuple[Indicator, list[tuple[date, float]]]] = []
+    prepared: list[tuple[Indicator, list[tuple[date, float]], float, float]] = []
     for ind in INDICATORS:
         pts = transform(ind.transform, hist_by_key.get(ind.key) or [])
         if pts:
-            prepared.append((ind, pts))
+            mean, sd = ((own_baseline(pts) if ind.own_baseline else None)
+                        or (ind.seed_mean, ind.seed_sd))
+            prepared.append((ind, pts, mean, sd))
     if not prepared:
         return []
 
-    last_month = max(pts[-1][0] for _, pts in prepared)
+    last_month = max(pts[-1][0] for _, pts, _, _ in prepared)
     months: list[date] = []
     m = date(start.year, (start.month - 1) // 3 * 3 + 1, 1)
     while m <= last_month:
@@ -437,14 +476,14 @@ def momentum_history(hist_by_key: dict[str, list[tuple[date, float]]],
     out: list[MomentumPoint] = []
     for mth in months:
         per_group: dict[str, list[float]] = {g: [] for g in GROUPS}
-        for ind, pts in prepared:
+        for ind, pts, mean, sd in prepared:
             val = None
             for d, v in pts:
                 if d <= mth:
                     val = v
                 else:
                     break
-            z = _z_of(val, ind.seed_mean, ind.seed_sd, ind.bad_news)
+            z = _z_of(val, mean, sd, ind.bad_news)
             if z is not None:
                 per_group[ind.group].append(z)
         n_members = sum(len(v) for v in per_group.values())

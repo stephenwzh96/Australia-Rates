@@ -691,9 +691,23 @@ def fetch_macro_bundle() -> dict[str, list[tuple[date, float]]]:
         pass
     put("job_vacancies", rba_table("h5").get("GLFOSVT"))
     put("wpi", rba_table("h4").get("GWPIQP"))
-    # RBA D1's DGFAC* credit-growth series froze at the June 2019 EFS
-    # changeover; Private Credit stays on the slide reading until a current
-    # credit series is wired.
+    # RBA republications of three private surveys, and D1's EFS-era credit
+    # series (the old DGFACM total froze at the June 2019 changeover).
+    put("westpac_mi_sentiment", rba_table("h3").get("GICWMICS"))
+    put("nab_business_conditions", rba_table("h3").get("GICNBC"))
+    put("mi_inflation_expectations", rba_table("g3").get("GCONEXP"))
+    # Growth rates splice without a level break: the old total to June 2019,
+    # its EFS-era successor after.
+    d1 = rba_table("d1")
+    new = d1.get("DGFACNWM") or []
+    first_new = new[0][0] if new else None
+    put("private_credit", [(d, v) for d, v in d1.get("DGFACM") or []
+                           if first_new is None or d < first_new] + new)
+    try:
+        for k, obs in absmod.housing_series().items():
+            put(k, [(o.date, o.value) for o in obs])
+    except Exception:
+        pass
     for k in abs_sdmx.wired_keys():
         try:
             put(k, abs_sdmx.series_pairs(k))
