@@ -461,18 +461,49 @@ def job_switching_rate(under_12m: Series, over_12m: Series
             for d, vals in rows if (vals[0] + vals[1])]
 
 
-def to_quarterly(series: Series) -> list[tuple[date, float]]:
+def to_quarterly(series: Series, need: int = 1) -> list[tuple[date, float]]:
     """Average a monthly series within each calendar quarter.
 
     Averaged rather than sampled at quarter end: a single month of the Labour
     Force survey carries enough sampling noise that picking one and discarding
-    the other two would put that noise straight into the z-score.
+    the other two would put that noise straight into the z-score. `need` is
+    the months a quarter must have to count -- 3 for a monthly input, so the
+    quarter in progress is not plotted as two months' average beside whole
+    quarters (1, the default, passes a quarterly series through).
     """
     buckets: dict[tuple[int, int], list[float]] = {}
     for d, v in series:
         buckets.setdefault((d.year, (d.month - 1) // 3), []).append(v)
     return [(date(y, q * 3 + 1, 1), sum(vs) / len(vs))
-            for (y, q), vs in sorted(buckets.items())]
+            for (y, q), vs in sorted(buckets.items()) if len(vs) >= need]
+
+
+def deseasonalise(series: Series, period: int = 12) -> list[tuple[date, float]]:
+    """Stable additive seasonals out of a gapless monthly (`period=12`) or
+    quarterly (`period=4`) series.
+
+    Each calendar month's average gap to the centred 2x`period` moving
+    average is subtracted, re-centred so the level is kept. For the series
+    the ABS publishes only in original terms -- the gross flows, the duration
+    buckets, job tenure -- whose seasonals are as large as the moves read off
+    them: from 2010 to 2019 the medium-term unemployment rate averaged 3.42%
+    in February and 2.88% in December, the job-finding rate 20.8% in March
+    quarters and 19.7% in June quarters, the under-a-year tenure share 18.5%
+    in February and 19.8% in November. Too short a series (under three
+    cycles) is returned unchanged.
+    """
+    rows = sorted(series, key=lambda p: p[0])
+    vals = [v for _, v in rows]
+    half = period // 2
+    if len(vals) < 3 * period:
+        return rows
+    gaps: dict[int, list[float]] = {}
+    for i in range(half, len(vals) - half):
+        centred = (sum(vals[i - half:i + half]) + sum(vals[i - half + 1:i + half + 1])) / (2 * period)
+        gaps.setdefault(rows[i][0].month, []).append(vals[i] - centred)
+    factor = {m: sum(g) / len(g) for m, g in gaps.items()}
+    mean = sum(factor.values()) / len(factor) if factor else 0.0
+    return [(d, v - (factor.get(d.month, mean) - mean)) for d, v in rows]
 
 
 def lead(series: Series, quarters: int = FLOW_LEAD_QUARTERS

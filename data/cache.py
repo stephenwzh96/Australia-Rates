@@ -33,7 +33,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -67,6 +67,10 @@ class CachedSeries:
     key: str
     observations: list[Observation]
     fetched_at: date | None
+    #: The moment of the last check, to the second, in Sydney: what
+    #: `data.freshness.due` needs on a release day, when "fetched today" can
+    #: mean fetched before the 11:30 release. None in a file written before it.
+    checked_at: datetime | None = None
 
     @property
     def last_date(self) -> date | None:
@@ -87,8 +91,10 @@ def load(key: str) -> CachedSeries | None:
         obs = [Observation(date.fromisoformat(d), float(v))
                for d, v in raw.get("observations", [])]
         stamp = raw.get("fetched_at")
+        checked = raw.get("checked_at")
         return CachedSeries(key, sorted(obs, key=lambda o: o.date),
-                            date.fromisoformat(stamp) if stamp else None)
+                            date.fromisoformat(stamp) if stamp else None,
+                            datetime.fromisoformat(checked) if checked else None)
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return None
 
@@ -102,6 +108,7 @@ def save(key: str, observations: Iterable[Observation],
         "schema": SCHEMA,
         "key": key,
         "fetched_at": (fetched_at or clock.today()).isoformat(),
+        "checked_at": clock.now().isoformat(),
         "observations": [[d.isoformat(), v] for d, v in rows],
     }
     try:
@@ -175,6 +182,7 @@ def get_series(
     revision_window: int = REVISION_WINDOW_DAYS,
     recheck_after: int = 0,
     whole: bool = False,
+    due: Callable[[CachedSeries], bool] | None = None,
 ) -> list[Observation]:
     """Cached series, refreshed incrementally.
 
@@ -199,6 +207,12 @@ def get_series(
     """
     now = today or clock.today()
     cached = load(key)
+
+    # `due` (normally `data.freshness.due` on the copy's last check) decides
+    # whether to ask the source at all: on a release day it turns true at
+    # 11:30, where a day-granular `recheck_after` held the morning's copy.
+    if due is not None and cached and cached.observations and not due(cached):
+        return list(cached.observations)
 
     if (recheck_after and cached and cached.observations and cached.fetched_at
             and (now - cached.fetched_at).days < recheck_after

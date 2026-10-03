@@ -65,6 +65,13 @@ RELEASE_RESEARCH_TIMEOUT = 480
 
 # ------------------------------------------------------------------ market
 
+#: How long a rerun may reuse a data fetcher's answer without asking the disk
+#: layer, which decides freshness on the release clock (`data.freshness`: from
+#: 11:30 on a release day) and is cheap when nothing is due. Hours here held a
+#: morning read past the release.
+DATA_TTL = 600
+
+
 @st.cache_resource(show_spinner=False)
 def fetch_clock() -> dict[str, datetime]:
     """Wall-clock time of the last real fetch, process-wide like the cache."""
@@ -90,12 +97,12 @@ def refresh_curve_quotes() -> None:
         st.session_state.pop(k, None)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def fetch_rba_table():
     return rba.table_cached("f1")
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def rba_spot() -> dict[str, float | None]:
     """The handful of live RBA readings the rest of the app anchors on."""
     t = fetch_rba_table()
@@ -114,13 +121,13 @@ def rba_spot() -> dict[str, float | None]:
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def policy_changes() -> set:
     """Real dated cash rate moves, kept out of the volatility quiet bucket."""
     return rba.policy_change_dates()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def bbsw_history() -> list[tuple[date, float]]:
     """Daily 3-month BBSW, the volatility anchor.
 
@@ -132,13 +139,13 @@ def bbsw_history() -> list[tuple[date, float]]:
     return [(o.date, o.value) for o in fetch_rba_table().get(rba.BBSW_CODE, [])]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def cash_rate_history() -> list[tuple[date, float]]:
     """Daily AONIA -- what an IB contract settles on, averaged over its month."""
     return [(o.date, o.value) for o in fetch_rba_table().get(rba.CASH_TRADED_CODE, [])]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def cash_target_history() -> list[tuple[date, float]]:
     """Daily cash rate target -- the policy rate a decision sets."""
     return [(o.date, o.value) for o in fetch_rba_table().get(rba.CASH_TARGET_CODE, [])]
@@ -163,7 +170,7 @@ def kill_series_values() -> tuple[dict, dict]:
     return values, units
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def kill_series_history() -> dict[str, list]:
     """Recent history for the strip-health checks, for the Data-tab sparklines."""
     t = fetch_rba_table()
@@ -187,7 +194,7 @@ def kill_series_history() -> dict[str, list]:
 
 # ------------------------------------------------------------------ labour
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS labour workbooks…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling ABS labour workbooks…")
 def abs_series() -> dict[str, list]:
     """Every labour series the full-employment panel scores, in one call."""
     wb = absmod.labour_force_rates()
@@ -218,7 +225,7 @@ def abs_series() -> dict[str, list]:
     }
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def rba_table(name: str) -> dict[str, list[tuple[date, float]]]:
     """A whole RBA statistical table as {series id: [(date, value)]}."""
     try:
@@ -240,7 +247,7 @@ def _lead_forward(series: list[tuple[date, float]], quarters: int = 1
     return out
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS gross flows (100MB, once a month)…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling ABS gross flows (100MB, once a month)…")
 def gross_flows() -> dict[str, list[tuple[date, float]]]:
     """National gross flows between labour-force states, monthly, '000s."""
     try:
@@ -249,16 +256,19 @@ def gross_flows() -> dict[str, list[tuple[date, float]]]:
         return {}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS gross flows (100MB, once a month)…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling ABS gross flows (100MB, once a month)…")
 def flow_series() -> dict:
     """The three flow measures the job-flows chart plots, as z-scores, quarterly."""
     pairs = lambda obs: [(o.date, o.value) for o in obs]
     flows = gross_flows()
     tenure = absmod.job_tenure()
-    finding = empmod.to_quarterly(empmod.job_finding_rate(flows))
-    switching = empmod.to_quarterly(empmod.job_switching_rate(
+    # Both come from original-terms data (the gross flows, Table 17 tenure),
+    # so their seasonals come out before the quarter-on-quarter read; and only
+    # whole quarters of the monthly rate are kept.
+    finding = empmod.to_quarterly(empmod.deseasonalise(empmod.job_finding_rate(flows)), need=3)
+    switching = empmod.to_quarterly(empmod.deseasonalise(empmod.job_switching_rate(
         pairs(tenure.find(absmod.TENURE_UNDER_12M, "Original")),
-        pairs(tenure.find(absmod.TENURE_OVER_12M, "Original"))))
+        pairs(tenure.find(absmod.TENURE_OVER_12M, "Original"))), period=4))
     wages = empmod.to_quarterly(pairs(rba.table_cached("h4").get("GWPIQP", [])))
     return {
         "finding": finding, "switching": switching, "wages": wages,
@@ -294,20 +304,10 @@ def _flow_sum(flows: dict, origins, destinations) -> dict[date, float]:
 
 
 def _deseasonalise(series: list[tuple[date, float]]) -> list[tuple[date, float]]:
-    """Stable additive seasonals out of a monthly series: each calendar month's
-    average gap to the centred 12-month mean is subtracted. The ABS publishes
-    the gross flows unadjusted, and a percentile rank of a seasonal series would
-    mostly rank the season."""
-    vals = [v for _, v in series]
-    if len(vals) < 36:
-        return series
-    gaps: dict[int, list[float]] = {}
-    for i in range(6, len(vals) - 6):
-        centred = (sum(vals[i - 6:i + 6]) + sum(vals[i - 5:i + 7])) / 24.0
-        gaps.setdefault(series[i][0].month, []).append(vals[i] - centred)
-    factor = {m: sum(g) / len(g) for m, g in gaps.items()}
-    mean = sum(factor.values()) / len(factor) if factor else 0.0
-    return [(d, v - (factor.get(d.month, mean) - mean)) for d, v in series]
+    """Stable seasonals out of a monthly series (`core.employment.deseasonalise`).
+    The ABS publishes the gross flows unadjusted, and a percentile rank of a
+    seasonal series would mostly rank the season."""
+    return empmod.deseasonalise(series)
 
 
 def _smooth3(series: list[tuple[date, float]]) -> list[tuple[date, float]]:
@@ -366,7 +366,7 @@ def _quarter_fill(series: list[tuple[date, float]], months: int = 2) -> list[tup
 QUARTERLY_LABOUR = ("VAC", "VAC_LF", "WPI", "SWITCH")
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the labour dashboard series…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling the labour dashboard series…")
 def fetch_labor_series() -> dict[str, list[tuple[date, float]]]:
     """Every series `core.labor` ranks, keyed as its indicators name them, each
     dated on the first of its reference month. Missing sources leave their keys
@@ -393,7 +393,10 @@ def fetch_labor_series() -> dict[str, list[tuple[date, float]]]:
         out["UND"] = _by_month(lab.get("underemployment"))
         out["UTIL"] = _by_month(lab.get("underutilisation"))
         out["YOUTH"] = _by_month(lab.get("youth"))
-        out["MTU"] = _by_month(lab.get("medium_term"))
+        # Original-terms duration buckets: ranked as a level, the raw rate
+        # would rank the season (Feb runs ~0.5pp above Dec). The Labour tab's
+        # full-employment panel keeps the published, unadjusted reading.
+        out["MTU"] = _by_month(_deseasonalise(lab.get("medium_term") or []))
     except Exception:
         pass
     try:
@@ -412,7 +415,7 @@ def fetch_labor_series() -> dict[str, list[tuple[date, float]]]:
     return {k: v for k, v in out.items() if v}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def fetch_jobs_panel() -> dict[str, list[tuple[date, float]]]:
     """Filled jobs by ANZSIC division and in total, quarterly, seasonally
     adjusted (ABS Labour Account, item M12)."""
@@ -422,7 +425,7 @@ def fetch_jobs_panel() -> dict[str, list[tuple[date, float]]]:
             if len(k) == 1 or k == "TOTAL"}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def fetch_wpi_panel() -> dict[str, list[tuple[date, float]]]:
     """Wage Price Index (total hourly rates excluding bonuses), year-ended %, by
     sector and industry, keyed "SECTOR|INDUSTRY" (7 all, 1 private, 2 public)."""
@@ -431,7 +434,7 @@ def fetch_wpi_panel() -> dict[str, list[tuple[date, float]]]:
     return {k: [(o.date, o.value) for o in v] for k, v in raw.items()}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def au_recessions() -> list[tuple[date, float]]:
     """1.0 for each month inside a technical recession -- two or more
     consecutive quarters of falling real GDP (RBA H1) -- else 0.0, monthly.
@@ -489,7 +492,7 @@ def decomposition_stocks() -> dict[str, list[tuple[date, float]]]:
             "N": [(d, lf[d] * (100.0 / pr[d] - 1.0)) for d in sorted(lf) if pr.get(d)]}
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def fetch_labour_grid() -> dict[str, list[tuple[date, float]]]:
     """The six labour-market charts' series: unemployment, participation and
     emp-pop (RBA H5); the jobs-workers gap; job loss and job switching; the
@@ -514,7 +517,7 @@ def fetch_labour_grid() -> dict[str, list[tuple[date, float]]]:
     return out
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the Household Spending Indicator…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling the Household Spending Indicator…")
 def fetch_hsi() -> dict[str, list]:
     """ABS Household Spending Indicator, A$m, current price, seasonally
     adjusted, national, monthly -- the total and every category, as
@@ -584,7 +587,7 @@ def capped(series: list[tuple[date, float]], as_of: date) -> list[tuple[date, fl
     return [(d, v) for d, v in series if d <= as_of]
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def fetch_lf_release_dates() -> dict[date, date]:
     """Reference month -> the day its Labour Force release came out (ABS
     release pages, Dec 2019 on). The exact half of the publication rules."""
@@ -596,20 +599,43 @@ def fetch_lf_release_dates() -> dict[date, date]:
 
 
 
+def replaying(as_of: date | None) -> bool:
+    """Whether the page is set to a day before today.
+
+    Only then do the release rules decide what shows. At today's as-of the
+    copy itself is the proof of publication -- it was read from the source --
+    and the rules, which err late by design, would hide a print that is out:
+    on 3 Oct 2026 they held back August building approvals (to 10 Oct), the
+    August-quarter vacancies and the September-quarter G3 expectations (to
+    31 Oct), and every release-day print until its rule's date."""
+    return as_of is not None and as_of < clock.today()
+
+
+def cut_as_of(as_of: date | None) -> date | None:
+    """The as-of to hand a cut that applies release rules itself
+    (`core.labor.as_published`): None -- no cut -- at today's as-of."""
+    return as_of if replaying(as_of) else None
+
+
 def published(rows, family: str, as_of: date | None) -> list:
     """`rows` cut to what had PRINTED by the as-of, by its release family
     (`core.publication`): a statistic shows from its release day, not from its
-    reference date."""
+    reference date. At today's as-of, everything in the copy dated by then."""
+    if not replaying(as_of):
+        return pub.published(rows, pub.SEED, as_of)
     return pub.published(rows, family, as_of, fetch_lf_release_dates())
 
 
 def published_map(data: dict, families, as_of: date | None, default: str | None = None) -> dict:
+    if not replaying(as_of):
+        pub.published_map(data, families, None, None, default)   # still refuses an unclassified key
+        return pub.published_map(data, pub.SEED, as_of)
     return pub.published_map(data, families, as_of, fetch_lf_release_dates(), default)
 
 
 # ------------------------------------------------------------------ inflation
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling ABS CPI workbooks…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling ABS CPI workbooks…")
 def cpi_series() -> dict:
     """Every CPI series the Inflation tab draws, resolved in one call.
 
@@ -668,13 +694,13 @@ def cpi_published(as_of: date | None) -> dict:
     for k in ("monthly_trimmed_yr", "monthly_ex_volatiles_yr"):
         cpi[k] = published(cpi.get(k) or [], pub.CPI_MONTHLY, as_of)
     at = cpi.get("as_at")
-    if at is not None and as_of is not None and pub.public_on(pub.CPI_QUARTERLY, at) > as_of:
+    if at is not None and replaying(as_of) and pub.public_on(pub.CPI_QUARTERLY, at) > as_of:
         cpi["as_at"] = max((d for rows in cpi["classes"].values() for d, _ in rows[-1:]),
                            default=None)
     return cpi
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling the monthly CPI…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling the monthly CPI…")
 def fetch_cpi_monthly() -> dict[str, list[tuple[date, float]]]:
     """The complete monthly CPI (ABS data API `CPI` v2.0.0), keyed
     "measure|index|tsest": index levels, % changes and contributions for every
@@ -684,14 +710,14 @@ def fetch_cpi_monthly() -> dict[str, list[tuple[date, float]]]:
     return {k: [(o.date, o.value) for o in v] for k, v in raw.items()}
 
 
-@st.cache_data(ttl=24 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def cpi_tree():
     """The CPI expenditure tree, from the ABS's own codelist."""
     from core import cpi_monthly
     return cpi_monthly.tree(abs_sdmx.codelist("CPI", "2.0.0", "CL_CPI_INDEX"))
 
 
-@st.cache_data(ttl=24 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def cpi_weights() -> dict[str, float]:
     """Each CPI item's basket weight (%), the latest annual reweight."""
     raw = abs_sdmx.panel("CPI_WEIGHTS,1.0.0", "1..50.Q", ("INDEX",), start="2020")
@@ -705,7 +731,7 @@ def cpi_monthly_vintage() -> date | None:
     return rows[-1][0] if rows else None
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@st.cache_data(ttl=DATA_TTL, show_spinner=False)
 def cpi_classification() -> tuple[list, list]:
     """The two editable analytical splits, off disk."""
     return infl.load_classification(str(CLASSIFICATION_PATH))
@@ -713,7 +739,7 @@ def cpi_classification() -> tuple[list, list]:
 
 # ------------------------------------------------------------------ macro
 
-@st.cache_data(ttl=6 * 3600, show_spinner="Pulling macro indicators…")
+@st.cache_data(ttl=DATA_TTL, show_spinner="Pulling macro indicators…")
 def fetch_macro_bundle() -> dict[str, list[tuple[date, float]]]:
     """Raw history for every Macro-tab indicator that has a wired feed, keyed by
     the `core.macro` indicator key. Three keyless sources -- the ABS SDMX data
@@ -891,7 +917,7 @@ def refresh_all_sources() -> None:
     for extra in _EXTRA_CLEARS:
         extra()
     rba._table_memo.cache_clear()
-    absmod.latest_release.cache_clear()
+    absmod.clear_release_memo()
     datacache.clear()
 
 

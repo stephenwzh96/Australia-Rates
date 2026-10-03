@@ -49,7 +49,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from . import cache
+from . import cache, freshness
 from .common import Observation
 from core import clock
 
@@ -248,8 +248,8 @@ def fetch_table(table: str) -> str | None:
         return None
 
 
-@lru_cache(maxsize=8)
-def _table_memo(table: str, _day: date) -> dict[str, list[Observation]]:
+@lru_cache(maxsize=16)
+def _table_memo(table: str, _token: tuple) -> dict[str, list[Observation]]:
     """Process-level memo over `_load_table`, keyed on the day.
 
     The disk cache stops the app re-downloading; this stops it re-PARSING.
@@ -259,9 +259,10 @@ def _table_memo(table: str, _day: date) -> dict[str, list[Observation]]:
     `@st.cache_data` would only cover the app; putting the memo here means
     tests, the export path and any CLI use get it too.
 
-    `_day` is part of the key rather than ignored so a session running across
-    midnight picks up the new day's publication instead of holding yesterday's
-    parse forever.
+    `_token` (`data.freshness.token`) is part of the key so a running session
+    picks up a release-morning republication -- the RBA's H and G tables move
+    on ABS release days at 11:30 -- instead of holding the morning's parse
+    until midnight.
     """
     return _load_table(table)
 
@@ -274,7 +275,7 @@ def table_cached(table: str, recheck_after: int = 1) -> dict[str, list[Observati
     code. Rechecked daily -- nothing in F1 publishes more often, and the first
     visit of the day is the "did anything print?" check.
     """
-    return _table_memo(table, clock.today())
+    return _table_memo(table, freshness.token())
 
 
 def _load_table(table: str) -> dict[str, list[Observation]]:
@@ -282,7 +283,7 @@ def _load_table(table: str) -> dict[str, list[Observation]]:
     key = f"rba-table-{table}"
     marker = cache.load(f"{key}-stamp")
     today = clock.today()
-    fresh = marker is not None and marker.fetched_at == today
+    fresh = marker is not None and not freshness.due(marker.checked_at)
 
     if not fresh:
         text = fetch_table(table)

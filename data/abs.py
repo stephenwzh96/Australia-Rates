@@ -40,14 +40,13 @@ from __future__ import annotations
 import datetime as _dt
 import io
 import re
-import time
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 
 import requests
 
-from . import cache
+from . import cache, freshness
 from .common import Observation
 
 LF_LANDING = ("https://www.abs.gov.au/statistics/labour/employment-and-unemployment/"
@@ -114,14 +113,29 @@ def _month_slug(text: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-@lru_cache(maxsize=4)
 def latest_release(landing: str) -> str | None:
     """The reference-period slug the current release actually lives under.
 
     Read off the landing page rather than derived from today's date: the two
     releases run on different lags, and the headline one is itself published
     three weeks after the month it describes.
+
+    Memoised per `freshness.token`, not for the life of the process: a plain
+    `lru_cache` here held the slug until a restart or "Refresh all", so a
+    server running across a release showed the previous Labour Force and CPI
+    -- and the next-print model forecast a month that had already printed.
     """
+    return _latest_release_at(landing, freshness.token())
+
+
+def clear_release_memo() -> None:
+    """Forget every landing page read, for "Refresh all"."""
+    _latest_release_at.cache_clear()
+    _release_href_at.cache_clear()
+
+
+@lru_cache(maxsize=16)
+def _latest_release_at(landing: str, _token: tuple) -> str | None:
     try:
         r = requests.get(landing, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
@@ -605,13 +619,15 @@ NEW_HOME_LOANS = ("Households ;  Housing Finance ;  Total dwellings excluding re
 
 
 def _release_href(landing: str, fname: str) -> str | None:
-    """`_release_href_at` bucketed into six-hour windows, so a long-running
-    server picks up a new release the same day it is published."""
-    return _release_href_at(landing, fname, int(time.time() // (6 * 3600)))
+    """`_release_href_at` keyed on `freshness.token`, so a release is seen
+    within minutes of 11:30. Six-hour UTC buckets put the boundary at 16:00
+    Sydney (17:00 in daylight time): a release-morning read held the old
+    period for the rest of the working day."""
+    return _release_href_at(landing, fname, freshness.token())
 
 
-@lru_cache(maxsize=16)
-def _release_href_at(landing: str, fname: str, _window: int) -> str | None:
+@lru_cache(maxsize=32)
+def _release_href_at(landing: str, fname: str, _token: tuple) -> str | None:
     """The current file's full URL as the landing page links it. Read rather
     than built: a release's slug is a month (`aug-2026`) for some and a
     quarter (`jun-quarter-2026`) for others, and Lending Indicators moved

@@ -26,7 +26,7 @@ def _live(ctx: Ctx) -> dict:
     """Every series cut to what had printed by the as-of: exact Labour Force
     days from the ABS release pages, each other family's late rule
     (`core.publication`)."""
-    return labor.as_published(src.fetch_labor_series(), ctx.as_of, {},
+    return labor.as_published(src.fetch_labor_series(), src.cut_as_of(ctx.as_of), {},
                               src.fetch_lf_release_dates())
 
 

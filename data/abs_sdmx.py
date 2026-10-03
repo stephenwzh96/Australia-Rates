@@ -25,7 +25,7 @@ from datetime import date, datetime
 
 import requests
 
-from . import cache
+from . import cache, freshness
 from .common import Observation
 from core import clock
 
@@ -128,8 +128,8 @@ def series(indicator_key: str) -> list[Observation]:
     return cache.get_series(
         f"abs-sdmx-{indicator_key}",
         lambda since: _fetch(flow, key, since),
-        recheck_after=1,
         whole=True,
+        due=lambda c: freshness.due(c.checked_at),
     )
 
 
@@ -160,23 +160,22 @@ def _fetch_panel(flow: str, key: str, dims: tuple[str, ...],
     return {k: [Observation(d, v) for d, v in sorted(s.items())] for k, s in out.items()}
 
 
-def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
-          max_age_days: int = 1) -> dict[str, list[Observation]]:
+def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998"
+          ) -> dict[str, list[Observation]]:
     """A whole SDMX panel -- e.g. filled jobs by industry, WPI by industry --
     keyed by the `dims` values, cached on disk as one snapshot and refetched
-    whole once it is `max_age_days` old. Whole, not windowed: these are revised
-    statistics, and a windowed merge would splice two vintages. A failed fetch
-    serves the last good snapshot; nothing raises."""
+    whole when `freshness.due` says so (on a release day, from 11:30). Whole,
+    not windowed: these are revised statistics, and a windowed merge would
+    splice two vintages. A failed fetch serves the last good snapshot; nothing
+    raises."""
     ckey = f"abs-sdmx-panel-{flow}-{key}-{'-'.join(dims)}"
     cached = cache.read_json(ckey)
-    stamp = next((r.get("fetched") for r in cached if "fetched" in r), None)
-    fresh = False
-    if stamp:
-        try:
-            age = (clock.today() - date.fromisoformat(stamp)).days
-            fresh = age < max_age_days
-        except ValueError:
-            fresh = False
+    stamp = next((r.get("checked") for r in cached if "checked" in r), None)
+    try:
+        checked = datetime.fromisoformat(stamp) if stamp else None
+    except ValueError:
+        checked = None
+    fresh = bool(cached) and not freshness.due(checked)
 
     def unpack(rows: list[dict]) -> dict[str, list[Observation]]:
         out: dict[str, list[Observation]] = {}
@@ -195,7 +194,7 @@ def panel(flow: str, key: str, dims: tuple[str, ...], start: str = "1998",
     got = _fetch_panel(flow, key, dims, start)
     if got is None:
         return unpack(cached)
-    rows = [{"fetched": clock.today().isoformat()}]
+    rows = [{"fetched": clock.today().isoformat(), "checked": clock.now().isoformat()}]
     rows += [{"k": k, "d": o.date.isoformat(), "v": o.value} for k, obs in got.items()
              for o in obs]
     cache.write_json(ckey, rows)

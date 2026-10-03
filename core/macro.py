@@ -302,6 +302,10 @@ def _ma3(rows: list[tuple[date, float]]) -> list[tuple[date, float]]:
     return out
 
 
+def _month_gap(a: date, b: date) -> int:
+    return (b.year - a.year) * 12 + b.month - a.month
+
+
 def _months_before(d: date, n: int) -> date:
     y, m = divmod(d.year * 12 + d.month - 1 - n, 12)
     return date(y, m + 1, 1)
@@ -321,9 +325,13 @@ def transform(tag: str, raw: list[tuple[date, float]]) -> list[tuple[date, float
         return _quarterly(rows)
 
     if tag == "qoq_lvl":
+        # Adjacent quarters only. The ABS suspended the Job Vacancies survey
+        # from Aug 2008 to Aug 2009; differencing by row printed the 18-month
+        # change across the hole (-19.3%) as one quarter's, dated Q4 2009.
         q = _quarterly(rows)
         return [(b[0], (b[1] / a[1] - 1.0) * 100.0)
-                for a, b in zip(q, q[1:]) if a[1]]
+                for a, b in zip(q, q[1:])
+                if a[1] and _month_gap(a[0], b[0]) == 3]
 
     if tag == "ma3":
         # A quarterly series of monthly-survey averages is already the 3m m.a.
@@ -346,7 +354,7 @@ def transform(tag: str, raw: list[tuple[date, float]]) -> list[tuple[date, float
         return out
     if tag == "mom3":
         mom = [(b[0], (b[1] / a[1] - 1.0) * 100.0)
-               for a, b in zip(m, m[1:]) if a[1]]
+               for a, b in zip(m, m[1:]) if a[1] and _month_gap(a[0], b[0]) == 1]
         return _ma3(mom)
     return []
 

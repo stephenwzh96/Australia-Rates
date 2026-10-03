@@ -249,7 +249,7 @@ def _macro(ctx) -> list[str]:
 
 
 def _labour(ctx) -> list[str]:
-    live = labor.as_published(src.fetch_labor_series(), ctx.as_of, {},
+    live = labor.as_published(src.fetch_labor_series(), src.cut_as_of(ctx.as_of), {},
                               src.fetch_lf_release_dates())
     month = labor.complete_month(live, labor.CHANGE_MONTHS)
     readings = labor.dashboard(labor.through_month(live, month), change_months=labor.CHANGE_MONTHS)
