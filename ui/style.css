@@ -618,10 +618,13 @@ hr, [data-testid="stDivider"] { margin: 0.6rem 0 !important; opacity: 0.5; }
   border-right: 1px solid var(--fomc-hair-strong);
 }
 .fomc-taylor td.rl { font-size: 0.72rem; opacity: 0.8; }
+/* Nine unemployment columns at 3.4rem + 0.4rem padding came to ~670px against
+   a ~520px column: the grid ran under the readings beside it. */
 .fomc-taylor td.c {
-  text-align: center; padding: 0.22rem 0.4rem; min-width: 3.4rem;
+  text-align: center; padding: 0.22rem 0.28rem; min-width: 2.8rem;
   font-family: var(--fomc-num); font-size: 0.74rem;
 }
+.fomc-taylor-wrap { overflow-x: auto; }
 .fomc-taylor td.c.box { font-weight: 700; }
 
 .fomc-trheat {
@@ -734,8 +737,11 @@ hr, [data-testid="stDivider"] { margin: 0.6rem 0 !important; opacity: 0.5; }
 .rx-rule { position: absolute; left: 0; right: 0; top: 1.25rem; height: 1px;
            background: var(--fomc-hair-strong); }
 .rx-today { position: absolute; left: 0; top: 0; }
-.rx-today span { white-space: nowrap; font-family: var(--fomc-num); font-size: 0.68rem;
-                 color: var(--fomc-muted, inherit); }
+/* line-height 1 keeps the label's box clear of a pin mark, which rises 0.3rem
+   above the line: at the inherited line-height an exit four days out drew its
+   mark straight through "today · 11 Oct". */
+.rx-today span { display: block; line-height: 1; white-space: nowrap; font-family: var(--fomc-num);
+                 font-size: 0.68rem; color: var(--fomc-muted, inherit); }
 .rx-today::after { content: ""; position: absolute; left: -3px; top: calc(1.25rem - 3px); width: 7px;
                    height: 7px; border-radius: 50%; background: var(--fomc-ink, currentColor); }
 .rx-pin { position: absolute; top: 1.25rem; transform: translateX(-50%); display: flex;

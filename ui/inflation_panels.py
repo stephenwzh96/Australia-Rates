@@ -34,7 +34,7 @@ def trend(ctx: Ctx, start) -> None:
     if not live:
         st.warning("No CPI series could be loaded — the Data tab has each source's status.")
         return
-    vintages = {"Monthly": charts.Vintage(src.next_release(econ_calendar.CPI_M, ctx.today),
+    vintages = {"Monthly": charts.Vintage(src.next_monthly_cpi(ctx.today),
                                           src.cpi_monthly_vintage()),
                 "Quarterly": charts.Vintage(src.next_release(econ_calendar.CPI_Q, ctx.today),
                                             src.cpi_published(as_of).get("as_at"))}
@@ -87,7 +87,7 @@ def contributions(ctx: Ctx, start) -> None:
     panel = src.published_map(src.fetch_cpi_monthly(), pub.CPI_MONTHLY, as_of)
     nodes = src.cpi_tree()
     last = max((rows[-1][0] for rows in panel.values() if rows), default=None)
-    vintage = charts.Vintage(src.next_release(econ_calendar.CPI_M, ctx.today), last)
+    vintage = charts.Vintage(src.next_monthly_cpi(ctx.today), last)
     C.section("CPI inflation contributions",
               "by expenditure group · the ABS's own contribution measures")
     figs = cpi_monthly.group_contributions(panel, nodes)

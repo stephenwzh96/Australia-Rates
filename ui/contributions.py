@@ -77,13 +77,17 @@ def _placeholder(title: str, p: Palette, msg: str = "No data available") -> go.F
     return fig
 
 
-def _tick_format(dates) -> str:
-    """Month and year when a bare year would repeat across the window."""
+def _tick_format(dates) -> tuple[str, str | None]:
+    """(tickformat, dtick): month and year when a bare year would repeat across
+    the window. A bare year also pins one tick a year -- left to itself Plotly
+    ticked a 29-month window every six months and printed each year twice."""
     live = [d for d in dates if d is not None]
     if not live:
-        return "%Y"
+        return "%Y", "M12"
     lo, hi = min(live), max(live)
-    return "%b %Y" if (hi.year - lo.year) * 12 + (hi.month - lo.month) <= 24 else "%Y"
+    if (hi.year - lo.year) * 12 + (hi.month - lo.month) <= 24:
+        return "%b %Y", None
+    return "%Y", "M12"
 
 
 def contribution_stack(fig: ContributionFigure, p: Palette, height: int = 440,
@@ -119,7 +123,8 @@ def contribution_stack(fig: ContributionFigure, p: Palette, height: int = 440,
                          font=dict(color=p.ink, size=12),
                          margin=dict(l=58, r=18, t=46, b=legend_margin),
                          legend=legend, hovermode="x unified")
-    figobj.update_xaxes(type="date", tickformat=_tick_format(dates), hoverformat="%b %Y",
+    tickformat, dtick = _tick_format(dates)
+    figobj.update_xaxes(type="date", tickformat=tickformat, dtick=dtick, hoverformat="%b %Y",
                         gridcolor=p.grid)
     figobj.update_yaxes(title=dict(text="Contribution (pp) · inflation (%)"),
                         gridcolor=p.grid, zeroline=False, tickformat=".1f")

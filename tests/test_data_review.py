@@ -98,6 +98,34 @@ def test_todays_as_of_shows_every_print_the_copy_holds(monkeypatch):
     assert src.published(rows, pub.APPROVALS, date(2026, 10, 2)) == rows[:1]
 
 
+def test_todays_as_of_keeps_a_print_stamped_at_its_month_end(monkeypatch):
+    """The RBA stamps a month at its last day, so October's Westpac-MI print
+    (out 7 Oct, H3 row 31/10/2026) is dated after 11 Oct. Cutting today's copy
+    on the stamp dropped it from Macro while Labour showed it."""
+    from core import publication as pub
+    from ui import sources as src
+    monkeypatch.setattr(src, "fetch_lf_release_dates", lambda: {})
+    monkeypatch.setattr(src.clock, "today", lambda: date(2026, 10, 11))
+    rows = [(date(2026, 9, 30), 84.4), (date(2026, 10, 31), 80.4)]
+    assert src.published(rows, pub.WESTPAC_MI, date(2026, 10, 11)) == rows
+    assert src.published_map({"s": rows}, pub.WESTPAC_MI, date(2026, 10, 11)) == {"s": rows}
+    # A month that has not begun is still not in today's copy.
+    assert src.published(rows + [(date(2026, 11, 30), 1.0)], pub.WESTPAC_MI,
+                         date(2026, 10, 11)) == rows
+    # A replay still applies the rule: October counts from its month end.
+    assert src.published(rows, pub.WESTPAC_MI, date(2026, 10, 10)) == rows[:1]
+
+
+def test_next_monthly_cpi_includes_the_quarterly_day(monkeypatch):
+    """September's monthly CPI prints with the September-quarter CPI on 28 Oct,
+    a day the calendar files under the quarterly release alone: the monthly
+    panels read "Next release: 25 Nov" on 11 Oct."""
+    from ui import sources as src
+    monkeypatch.setattr(src, "release_dates", lambda today: ())
+    assert src.next_monthly_cpi(date(2026, 10, 11)) == date(2026, 10, 28)
+    assert src.next_monthly_cpi(date(2026, 10, 29)) == date(2026, 11, 25)
+
+
 def test_todays_map_still_refuses_an_unclassified_series(monkeypatch):
     from ui import sources as src
     monkeypatch.setattr(src.clock, "today", lambda: date(2026, 10, 3))

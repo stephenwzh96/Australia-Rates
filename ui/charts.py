@@ -392,9 +392,25 @@ def capital_at_risk(ladder, p: Palette, height: int = 230) -> alt.LayerChart:
 
     scale = alt.Scale(domain=["Max gain A$", "Max loss A$"],
                       range=[p.positive, p.negative])
-    x_enc = alt.X("g:Q", axis=alt.Axis(format=".2%", title="expected growth per bet",
-                                       tickCount=len(ladder.rungs)))
-    y_enc = alt.Y("amount:Q", axis=alt.Axis(title="A$", format=",.0f"))
+    # Each rung is named on the x-axis at its own growth, with the figure under
+    # it. Named in the plot, under the loss dot, "Quarter" sat on the gain line
+    # and its dollar label; and the axis needs room past both ends for the
+    # money labels, or the Full rung's ran off the right edge.
+    gs = [r.growth for r in ladder.rungs]
+    lo, hi = min(gs), max(gs)
+    span = (hi - lo) or abs(hi) or 0.01
+    # repr() is the shortest round-trip form, so JS reads back the same double
+    # the axis is handed in `values` and the equality holds exactly.
+    label_expr = ("[" + " ".join(f"datum.value == {r.growth!r} ? {r.label!r} :"
+                                 for r in ladder.rungs)
+                  + " '', format(datum.value, '.2%')]")
+    x_enc = alt.X("g:Q", scale=alt.Scale(domain=[lo - 0.22 * span, hi + 0.16 * span],
+                                         nice=False, zero=False),
+                  axis=alt.Axis(title="expected growth per bet", values=gs,
+                                labelExpr=label_expr, labelFlush=False))
+    top = max(max(r.max_loss, r.max_gain) for r in ladder.rungs)
+    y_enc = alt.Y("amount:Q", scale=alt.Scale(domain=[0, top * 1.18], nice=False),
+                  axis=alt.Axis(title="A$", format=",.0f"))
     tooltip = [alt.Tooltip("rung:N", title="Kelly"),
                alt.Tooltip("kind:N", title=""),
                alt.Tooltip("money:N", title="amount"),
@@ -426,20 +442,17 @@ def capital_at_risk(ladder, p: Palette, height: int = 230) -> alt.LayerChart:
                     tooltip=tooltip)
         )
 
-    labels = (
-        alt.Chart(df).mark_text(align="left", dx=8, dy=-7, fontSize=10,
-                                fontWeight="bold")
-        .encode(x=x_enc, y=y_enc, text=alt.Text("money:N"),
-                color=alt.Color("kind:N", scale=scale, legend=None),
-                opacity=alt.condition(alt.datum.selected, alt.value(1.0),
-                                      alt.value(0.6)))
-    )
-    rung_names = (
-        alt.Chart(df[df["kind"] == "Max loss A$"])
-        .mark_text(align="center", dy=16, fontSize=10, color=p.muted)
-        .encode(x=x_enc, y=y_enc, text="rung:N")
-    )
-    layers += [labels, rung_names]
+    # Both lines rise left to right, so a loss label above-left of its dot and
+    # a gain label below-right of its dot each sit on the open side of the line.
+    def money(kind: str, **mark) -> alt.Chart:
+        return (alt.Chart(df[df["kind"] == kind])
+                .mark_text(fontSize=10, fontWeight="bold", **mark)
+                .encode(x=x_enc, y=y_enc, text=alt.Text("money:N"),
+                        color=alt.Color("kind:N", scale=scale, legend=None),
+                        opacity=alt.condition(alt.datum.selected, alt.value(1.0),
+                                              alt.value(0.6))))
+    layers += [money("Max loss A$", align="right", dx=-7, dy=-8),
+               money("Max gain A$", align="left", dx=7, dy=11)]
     return _apply(alt.layer(*layers), p, height)
 
 
@@ -606,7 +619,7 @@ def contract_history_chart(history: list[tuple[date, float]], code: str,
             y=alt.Y("moves:Q" if show_moves else "price:Q",
                     axis=alt.Axis(title="Policy move priced (bp)" if show_moves
                                         else "Price",
-                                  format="+.0f" if show_moves else alt.Undefined,
+                                  format="+.0f" if show_moves else ".3f",
                                   titleColor=p.muted, labelColor=p.muted,
                                   gridColor=p.grid),
                     scale=alt.Scale(nice=True, padding=0.05, zero=False)),
@@ -947,7 +960,10 @@ def sparkline(observations, threshold: float | None, triggered: bool,
         alt.Chart(df).mark_line(strokeWidth=LINE_WIDTH)
         .encode(
             x=alt.X("date:T", axis=alt.Axis(title=None, format="%b %y", tickCount=4)),
-            y=alt.Y("value:Q", axis=alt.Axis(title=None), scale=alt.Scale(zero=False)),
+            # "~g": a series that sits flat on zero (the AONIA gap) gave Vega an
+            # empty domain, and its default format printed "0.000000".
+            y=alt.Y("value:Q", axis=alt.Axis(title=None, format="~g"),
+                    scale=alt.Scale(zero=False)),
             color=alt.value(colour),
             tooltip=[alt.Tooltip("date:T", title="date"),
                      alt.Tooltip("value:Q", format=".2f", title="value")],
@@ -1179,6 +1195,21 @@ def _tidy(named: dict[str, list[tuple[date, float]]], order: list[str] | None = 
     return pd.DataFrame(rows) if rows else _EMPTY.copy()
 
 
+def _midday(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """`col` stamped at noon, for a chart that bins it by month or quarter.
+
+    Streamlit hands Vega a naive date shifted by the browser's UTC offset at
+    that instant. On a DST-start day the instant is already in summer time, so
+    in Sydney 1 Oct 2023 00:00 arrived as 23:00 on 30 Sep and binned into
+    September / Q3 -- two periods stacked in one bar, the next left empty.
+    Noon is eleven hours from either day boundary; an hour cannot move a bin."""
+    if df.empty or col not in df:
+        return df
+    out = df.copy()
+    out[col] = pd.to_datetime(out[col]).dt.normalize() + pd.Timedelta(hours=12)
+    return out
+
+
 def _since(df: pd.DataFrame, start: date | None) -> pd.DataFrame:
     if start is None or df.empty:
         return df
@@ -1301,6 +1332,7 @@ def cpi_composition(buckets, cpi_line, order: list[str], p: Palette,
     # assumed column left wide gaps on a wide screen and hairlines on a narrow
     # one.
     axis = _time_axis(df)
+    df, line = _midday(df, "when"), _midday(line, "when")
     bars = alt.Chart(df).mark_bar(width=alt.RelativeBandSize(0.82), stroke=p.surface,
                                   strokeWidth=0.5).encode(
         x=alt.X("when:T", timeUnit="yearquarter", axis=axis),
@@ -1389,8 +1421,12 @@ def cpi_breadth(share, trimmed, share_mean: float | None, trimmed_mean: float | 
                    trimmed_mean, ".2f")
     title = vintage_title(f"Breadth of CPI inflation — dashed lines are "
                           f"{mean_label} averages", vintage, p)
-    return _apply(alt.vconcat(top, bottom, spacing=8).properties(title=title),
-                  p, height)
+    # fit-x: left to the default "pad", each "container" panel took the whole
+    # column for its plot and hung the y-axis outside it, so the pair drew
+    # ~46px wider than the column and lost the latest quarter off the right.
+    return _apply(alt.vconcat(top, bottom, spacing=8).properties(
+        title=title, autosize=alt.AutoSizeParams(type="fit-x", contains="padding")),
+        p, height)
 
 
 def cpi_cycle(split, p: Palette, start: date | None = None,
@@ -1744,6 +1780,7 @@ def macro_momentum(history, p: Palette, height: int = 340,
     df, tdf = df[df["month"].isin(keep)], tdf[tdf["month"].isin(keep)]
 
     xfmt, xticks = _macro_time_format(list(tdf["month"]))
+    df, tdf = _midday(df, "month"), _midday(tdf, "month")
     axis = alt.Axis(title=None, format=xfmt, tickCount=xticks)
     x_enc = alt.X("month:T", timeUnit="yearquarter", axis=axis)
     x_mid = alt.X("month:T", timeUnit="yearquarter", bandPosition=0.5, axis=axis)
@@ -1807,7 +1844,7 @@ def playbook_levels(
             continue
         rows.append({"label": o.name.title(), "level": o.new_points,
                      "kind": "scenario", "row": 0.62})
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(_tier_labels(rows, near=0.12 * size))
 
     colour_map = alt.Scale(
         domain=["entry", "receive", "market", "scenario", "reference"],
@@ -1821,14 +1858,35 @@ def playbook_levels(
     dots = base.mark_circle(size=72).encode(
         alt.Tooltip(["label:N", "level:Q"]),
     )
-    ref_text = base.mark_text(
-        align="left", dx=6, dy=-9, fontSize=10,
-    ).encode(alt.Text("label:N")).transform_filter("datum.row == 0")
-    scen_text = base.mark_text(
-        align="left", dx=6, dy=12, fontSize=10,
-    ).encode(alt.Text("label:N")).transform_filter("datum.row > 0")
-    chart = dots + ref_text + scen_text
-    return _apply(chart, p, height)
+    texts = [base.mark_text(align="left", dx=6, dy=dy, fontSize=10)
+             .encode(alt.Text("label:N"))
+             .transform_filter(f"datum.row {op} 0 && datum.tier == {tier}")
+             for op, dys in (("==", (-9, -21)), (">", (12, 24)))
+             for tier, dy in enumerate(dys)]
+    return _apply(alt.layer(dots, *texts), p, height)
+
+
+def _tier_labels(rows: list[dict], near: float) -> list[dict]:
+    """One label per level, and a second tier for a label that would land on
+    its neighbour. Entry and market both at 7.78bp printed "Pay" over
+    "Market"; ties now read "Pay · Market", and a label within `near` bp of
+    the last one on its tier moves up (or down) a line."""
+    merged: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["row"], round(r["level"], 2))
+        if key in merged:
+            merged[key]["label"] += f" · {r['label']}"
+        else:
+            merged[key] = dict(r)
+    out = sorted(merged.values(), key=lambda r: (r["row"], r["level"]))
+    last: dict[tuple, float] = {}
+    for r in out:
+        r["tier"] = 0
+        prev = last.get((r["row"], 0))
+        if prev is not None and r["level"] - prev < near:
+            r["tier"] = 1
+        last[(r["row"], r["tier"])] = r["level"]
+    return out
 
 
 def playbook_pnl(
@@ -1846,6 +1904,12 @@ def playbook_pnl(
                      "money": f"{'-' if pnl < 0 else '+'}A${abs(pnl):,.0f}",
                      "sign": "pos" if pnl >= 0 else "neg"})
     df = pd.DataFrame(rows)
+    if df.empty or not (df["pnl"].abs() > 0).any():
+        # Nothing sized yet: every P&L is zero, the axis domain collapses and
+        # Vega labelled it "NaN". Say what is missing instead.
+        note = pd.DataFrame({"t": ["P&L shows once a scenario is sized"]})
+        return _apply(alt.Chart(note).mark_text(fontSize=11, color=p.muted)
+                      .encode(text="t:N"), p, height)
 
     bar_colour = alt.Scale(
         domain=["pos", "neg"], range=[p.positive, p.negative])
@@ -2378,8 +2442,14 @@ def _gs_time_format(dates: list[date]) -> tuple[str, int]:
     if not dates:
         return "%Y", 6
     span = (max(dates) - min(dates)).days
+    # A month label on a span of a few weeks prints the same month on every
+    # tick (a contract with a week of settlements read "Oct 2026" eight
+    # times), so short spans label the day, and the month count caps the ticks
+    # so no two land in one month.
+    if span <= 92:
+        return "%d %b", max(2, min(8, span))
     if span <= 3 * 366:
-        return "%b %Y", 8
+        return "%b %Y", max(2, min(8, span // 30))
     return "%Y", 6
 
 
@@ -2495,6 +2565,7 @@ def _gs_bar(series: list[tuple[date, float]], title: str, ylabel: str,
     df = pd.DataFrame(series, columns=["date", "v"]).dropna()
     df["color"] = df["v"].apply(lambda v: p.positive if v >= 0 else p.negative)
     xfmt, xticks = _gs_time_format(list(df["date"]))
+    df = _midday(df, "date")
     bars = (
         alt.Chart(df)
         .mark_bar(strokeWidth=0, binSpacing=0)
@@ -2887,7 +2958,9 @@ def au_job_loss_switching_chart(data, p: Palette, height: int = 220,
 
 def au_employment_change_chart(data, p: Palette, height: int = 220,
                                vintage: "Vintage | None" = None,
-                               since: date | None = date(2023, 1, 1)) -> alt.LayerChart:
+                               since: date | None = None) -> alt.LayerChart:
+    # No fixed start of its own: the caller clips to the tab's history window,
+    # and a 2023 floor here left the bars two years short of the chart beside it.
     series = [(d, v) for d, v in data.get("EMP_CHANGE_3MA", []) if since is None or d >= since]
     return _gs_bar(series, "Net Employment Gains", "Thousands (3m avg)", p, height,
                    vintage=vintage)
@@ -2919,9 +2992,7 @@ def employment_components_chart(comp: dict, p: Palette, height: int = 380,
         for d, v in _clip_window(comp.get(key, []), window_start):
             line_rows.append({"date": d, "v": v, "line": label, "colour": ink, "dash": dash})
     ldf = pd.DataFrame(line_rows)
-    for df in (bdf, ldf):
-        if not df.empty:
-            df["date"] = pd.to_datetime(df["date"])
+    bdf, ldf = _midday(bdf, "date"), _midday(ldf, "date")
     xfmt, xticks = _gs_time_format(list(bdf["date"]) + list(ldf["date"])
                                    if not (bdf.empty and ldf.empty) else [])
     y = alt.Y("v:Q", axis=alt.Axis(title="Quarterly change ('000 jobs)", format=",.0f",
@@ -3903,6 +3974,21 @@ def spending_bubbles(snap, p: Palette, height: int = 600,
     def diameter(c) -> float:
         return max(_BUBBLE_MIN_PX, max_px * math.sqrt(c.sales / biggest))
 
+    # The axes were fitted to the bubbles' CENTRES, so the biggest discs ran
+    # off the plot (Transport off the top, Recreation off the bottom). Widen
+    # each axis by every disc's own radius in data units; widening shrinks a
+    # pixel's worth of data, so a few passes settle it. 6px past the rim keeps
+    # a disc off the frame rather than tangent to it.
+    def reach(c) -> float:
+        return diameter(c) / 2 + 6
+
+    for _ in range(6):
+        per_x, per_y = (x1 - x0) / plot_w, (y1 - y0) / plot_h
+        x0 = min([x0] + [c.yoy - reach(c) * per_x for c in shown])
+        x1 = max([x1] + [c.yoy + reach(c) * per_x for c in shown])
+        y0 = min([y0] + [c.mom - reach(c) * per_y for c in shown])
+        y1 = max([y1] + [c.mom + reach(c) * per_y for c in shown])
+
     fig.add_trace(go.Scatter(
         x=[c.yoy for c in shown], y=[c.mom for c in shown], mode="markers",
         marker=dict(size=[diameter(c) for c in shown], sizemode="diameter",
@@ -4139,11 +4225,11 @@ def taylor_grid_table(grid, p: Palette) -> str:
         f"</span></div>")
 
     return (
-        f"<table class='fomc-taylor'>"
+        f"<div class='fomc-taylor-wrap'><table class='fomc-taylor'>"
         f"<thead><tr><th class='rl'>Trimmed mean</th>"
         f"<th class='ax' colspan='{len(grid.unemployment_axis)}'>Unemployment Rate</th></tr>"
         f"<tr><th class='rl'></th>{head}</tr></thead>"
-        f"<tbody>{''.join(body)}</tbody></table>{legend}")
+        f"<tbody>{''.join(body)}</tbody></table></div>{legend}")
 
 
 _TR_TEAL = "#0f6e8c"           # sampled from the Atlanta Fed's darkest cell
@@ -4268,9 +4354,16 @@ def smp_cash_path(points, p: Palette, latest_label: str, prior_label: str,
             filled=filled, size=150 if k == "IB strip today" else 120, shape=shapes[k],
             strokeWidth=1.8, color=colours[k], opacity=1.0).encode(x=x, y=y, tooltip=tips))
         if k == latest_label:
-            layers.append(alt.Chart(sub).mark_text(dy=-12, fontSize=10, fontWeight=600,
-                                                   color=p.ink).encode(
-                x=x, y=y, text=alt.Text("rate:Q", format=".1f")))
+            # The label goes on the side away from the previous round: above a
+            # dovish revision it sat on the revision rule or the hollow dot.
+            below = {pt.horizon for pt in points if pt.prior is not None
+                     and pt.latest is not None and pt.latest < pt.prior}
+            down = sub["horizon"].isin(below)
+            for part, dy in ((sub[~down], -12), (sub[down], 16)):
+                if len(part):
+                    layers.append(alt.Chart(part).mark_text(
+                        dy=dy, fontSize=10, fontWeight=600, color=p.ink).encode(
+                        x=x, y=y, text=alt.Text("rate:Q", format=".1f")))
     return _apply(alt.layer(*layers), p, height)
 
 

@@ -620,16 +620,17 @@ def cut_as_of(as_of: date | None) -> date | None:
 def published(rows, family: str, as_of: date | None) -> list:
     """`rows` cut to what had PRINTED by the as-of, by its release family
     (`core.publication`): a statistic shows from its release day, not from its
-    reference date. At today's as-of, everything in the copy dated by then."""
+    reference date. At today's as-of, everything in the copy whose month has
+    begun (`core.publication.begun`)."""
     if not replaying(as_of):
-        return pub.published(rows, pub.SEED, as_of)
+        return pub.begun(rows, as_of)
     return pub.published(rows, family, as_of, fetch_lf_release_dates())
 
 
 def published_map(data: dict, families, as_of: date | None, default: str | None = None) -> dict:
     if not replaying(as_of):
         pub.published_map(data, families, None, None, default)   # still refuses an unclassified key
-        return pub.published_map(data, pub.SEED, as_of)
+        return {k: pub.begun(rows, as_of) for k, rows in data.items()}
     return pub.published_map(data, families, as_of, fetch_lf_release_dates(), default)
 
 
@@ -847,6 +848,16 @@ def next_release(release: str, today: date, horizon_days: int = 200) -> date | N
     return next((e.when for e in econ_calendar.recurring_events(
         today, today + timedelta(days=horizon_days), None, release_dates(today))
         if e.release == release), None)
+
+
+def next_monthly_cpi(today: date) -> date | None:
+    """The next MONTHLY CPI print. A quarter's last month prints on the
+    quarterly CPI day, which the calendar files under the quarterly release
+    alone, so `next_release(CPI_M)` skipped it: on 11 Oct the monthly panels
+    read 25 Nov with September due on 28 Oct."""
+    days = [d for d in (next_release(econ_calendar.CPI_M, today),
+                        next_release(econ_calendar.CPI_Q, today)) if d]
+    return min(days) if days else None
 
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=64)

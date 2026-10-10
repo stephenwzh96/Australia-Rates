@@ -178,6 +178,18 @@ def published(rows: Iterable[T], family: str, as_of: date | None,
     return [r for r in rows if public_on(family, _date_of(r), exact_lf) <= as_of]
 
 
+def begun(rows: Iterable[T], as_of: date | None) -> list[T]:
+    """`rows` whose reference MONTH had begun by `as_of` -- the cut for a copy
+    read today, where the copy itself proves a print is out. The RBA stamps a
+    month at its last day, so a print made inside its own month (Westpac-MI,
+    out on the 7th, row dated the 31st) is dated after the day it was read;
+    cutting on the stamp hid it."""
+    rows = list(rows)
+    if as_of is None:
+        return rows
+    return [r for r in rows if _date_of(r).replace(day=1) <= as_of]
+
+
 def published_map(data: Mapping[str, Sequence[T]], families: Mapping[str, str] | str,
                   as_of: date | None, exact_lf: Mapping[date, date] | None = None,
                   default: str | None = None) -> dict[str, list[T]]:

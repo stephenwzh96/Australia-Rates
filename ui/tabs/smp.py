@@ -294,7 +294,7 @@ def _taylor(ctx: Ctx, table, latest) -> None:
                         params=params, band=taylor.HoldBand(current_rate=current),
                         anchors=[(f"SMP {c1}", tm1, u1), (f"SMP {c2}", tm2, u2)])
     a1, a2 = grid.anchors
-    grid_col, read_col = st.columns([1.5, 1], gap="large")
+    grid_col, read_col = st.columns([2.2, 1], gap="large")
     with grid_col:
         st.markdown(charts.taylor_grid_table(grid, P), unsafe_allow_html=True)
         C.note(f"Cash = r* + π + 0.5(π − π*) + 2(u* − u) · r* {r_star:.2f}%, π* "
