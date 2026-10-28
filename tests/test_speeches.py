@@ -537,10 +537,12 @@ def test_agent_timeout_is_forwarded_and_reported(monkeypatch):
 # pin that the UI can recognise that answer however it arrives.
 
 
-def test_available_does_not_guess_at_the_session():
-    """`available()` gates on the SDK import alone. A credentials file saying
-    nothing useful must not be turned into a refusal to run."""
+def test_available_does_not_guess_at_the_session(monkeypatch):
+    """`available()` gates on the SDK import and the CLI's version alone. A
+    credentials file saying nothing useful must not be turned into a refusal
+    to run."""
     from data import agent
+    monkeypatch.setattr(agent, "cli_choice", lambda: ("claude.exe", agent.MIN_VERSION))
     assert agent.available() == (True, "")
     assert not hasattr(agent, "signed_in")
 

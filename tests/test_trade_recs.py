@@ -147,12 +147,114 @@ def test_the_agent_runs_the_newest_desktop_cli_unless_one_is_named(tmp_path, mon
         d.mkdir(parents=True)
         (d / "claude.exe").write_bytes(b"")
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))   # not this machine's
     monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
-    assert agent.cli_path().endswith("2.1.281\claude.exe") or agent.cli_path().endswith("2.1.281/claude.exe")
+    assert agent.cli_path() == str(tmp_path / "Claude" / "claude-code" / "2.1.281" / "claude.exe")
     named = tmp_path / "mine.exe"
     named.write_bytes(b"")
     monkeypatch.setenv("CLAUDE_CODE_CLI", str(named))
     assert agent.cli_path() == str(named)
+
+
+def _no_path_claude(monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+
+def test_the_desktop_cli_is_found_one_folder_down(tmp_path, monkeypatch):
+    """Desktop 2.1.289+ keeps <version>/<hash>/claude.exe; the version is still
+    the folder under claude-code, not the hash."""
+    from data import agent
+
+    for v, sub in (("2.1.281", None), ("2.1.293", "83cb0bd7fed4"), ("2.1.289", "e1f0154146bb")):
+        d = tmp_path / "Claude" / "claude-code" / v
+        d = d / sub if sub else d
+        d.mkdir(parents=True)
+        (d / "claude.exe").write_bytes(b"")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
+    assert agent.cli_path() == str(tmp_path / "Claude" / "claude-code" / "2.1.293"
+                                   / "83cb0bd7fed4" / "claude.exe")
+
+
+def test_the_store_apps_cli_is_found_from_outside_its_container(tmp_path, monkeypatch):
+    """The MSIX desktop app's %APPDATA% writes land under its package's
+    LocalCache; a server the launcher starts sees nothing at %APPDATA%."""
+    from data import agent
+
+    appdata, local = tmp_path / "Roaming", tmp_path / "Local"
+    (appdata / "Claude").mkdir(parents=True)
+    pkg = local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude"
+    d = pkg / "claude-code" / "2.1.293" / "83cb0bd7fed4"
+    d.mkdir(parents=True)
+    (d / "claude.exe").write_bytes(b"")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
+    _no_path_claude(monkeypatch)
+    assert agent.cli_path() == str(d / "claude.exe")
+
+
+def test_the_desktop_apps_claude_data_folder_is_searched(tmp_path, monkeypatch):
+    """Since late Oct 2026 the desktop app keeps its copies under
+    %LOCALAPPDATA%\\Claude-Data\\claude_<id>\\claude-code."""
+    from data import agent
+
+    appdata, local = tmp_path / "Roaming", tmp_path / "Local"
+    appdata.mkdir()
+    d = local / "Claude-Data" / "claude_pzs8sxrjxfjjc" / "claude-code" / "2.1.308" / "c17a819afb40"
+    d.mkdir(parents=True)
+    (d / "claude.exe").write_bytes(b"")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
+    _no_path_claude(monkeypatch)
+    assert agent.cli_choice() == (str(d / "claude.exe"), (2, 1, 308))
+
+
+def test_a_claude_code_folder_in_a_place_never_seen_is_still_found(tmp_path, monkeypatch):
+    from data import agent
+
+    appdata, local = tmp_path / "Roaming", tmp_path / "Local"
+    appdata.mkdir()
+    d = local / "AnthropicSomethingNew" / "claude-code" / "2.1.400" / "abc123"
+    d.mkdir(parents=True)
+    (d / "claude.exe").write_bytes(b"")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
+    _no_path_claude(monkeypatch)
+    assert agent.cli_choice() == (str(d / "claude.exe"), (2, 1, 400))
+
+
+def test_the_path_claude_competes_on_version(tmp_path, monkeypatch):
+    import shutil
+    from data import agent
+
+    d = tmp_path / "Claude" / "claude-code" / "2.1.300"
+    d.mkdir(parents=True)
+    (d / "claude.exe").write_bytes(b"")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.delenv("CLAUDE_CODE_CLI", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "C:/bin/claude.exe")
+    monkeypatch.setattr(agent, "_reported_version", lambda exe: (2, 1, 63))
+    assert agent.cli_path() == str(d / "claude.exe")
+    monkeypatch.setattr(agent, "_reported_version", lambda exe: (2, 1, 350))
+    assert agent.cli_path() == "C:/bin/claude.exe"
+
+
+def test_a_too_old_cli_stops_the_run_before_it_starts(monkeypatch):
+    from data import agent
+
+    monkeypatch.setattr(agent, "cli_choice", lambda: ("C:/bin/claude.exe", (2, 1, 63)))
+    ok, why = agent.available()
+    assert not ok and "2.1.63" in why and "C:/bin/claude.exe" in why and "claude update" in why
+    monkeypatch.setattr(agent, "cli_choice", lambda: ("C:/x/claude.exe", agent.MIN_VERSION))
+    assert agent.available() == (True, "")
+    monkeypatch.setattr(agent, "cli_choice", lambda: (None, ()))
+    assert agent.available() == (True, "")
 
 
 def test_a_too_old_cli_is_explained_not_reported_as_unknown():

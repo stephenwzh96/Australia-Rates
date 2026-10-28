@@ -22,3 +22,5 @@ meetings/_manual_series*.json
 
 # Per-run backups of billed research (speech roundup, street calls, trade recs).
 meetings/.research_backups/
+# Local tool notes and screenshots (trip setup 2026-10-28)
+.claude/launch.json

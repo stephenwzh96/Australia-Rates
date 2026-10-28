@@ -24,32 +24,102 @@ SIGN_IN_MESSAGE = (
 )
 
 
-def _version(path) -> tuple[int, ...]:
+#: The oldest Claude Code the models offered here accept: Opus 5.5 refuses
+#: anything before 2.1.280 ("claude_code_version_too_old").
+MIN_VERSION = (2, 1, 280)
+
+
+def _version(name: str) -> tuple[int, ...]:
     try:
-        return tuple(int(x) for x in path.parent.name.split("."))
+        return tuple(int(x) for x in name.split("."))
     except ValueError:
         return ()
 
 
-def cli_path() -> str | None:
-    """The Claude Code binary to run, or None for the SDK's own choice.
+def _desktop_roots() -> list:
+    """Where the Claude desktop app keeps its Claude Code copies.
 
-    `CLAUDE_CODE_CLI` in `.env` wins. Otherwise the newest copy the Claude
-    desktop app keeps under %APPDATA%\\Claude\\claude-code\\<version>\\: the SDK
-    otherwise runs whatever `claude` is first on PATH, and an old one refuses
-    new models outright ("version 2.1.280 or newer is required" for Opus 5.5)."""
+    %APPDATA%\\Claude\\claude-code for a normal install. The Store (MSIX) build
+    writes there only inside its own container: Windows puts the files under
+    %LOCALAPPDATA%\\Packages\\Claude_<id>\\LocalCache\\Roaming, and a process
+    started outside the app -- the launcher's server -- sees nothing at
+    %APPDATA%. Late Oct 2026 builds moved them to
+    %LOCALAPPDATA%\\Claude-Data\\claude_<id>\\claude-code. The app has moved
+    them twice, so beyond the known places any `claude-code` folder one or
+    two levels under %LOCALAPPDATA% or %APPDATA% is searched too (~0.2s)."""
     import os
+    from pathlib import Path
+
+    roots = []
+    if appdata := os.environ.get("APPDATA"):
+        roots.append(Path(appdata) / "Claude" / "claude-code")
+    if local := os.environ.get("LOCALAPPDATA"):
+        roots += sorted((Path(local) / "Packages").glob(
+            "Claude_*/LocalCache/Roaming/Claude/claude-code"))
+    for env in ("LOCALAPPDATA", "APPDATA"):
+        if base := os.environ.get(env):
+            roots += sorted((*Path(base).glob("*/claude-code"),
+                             *Path(base).glob("*/*/claude-code")))
+    seen, out = set(), []
+    for r in roots:
+        if str(r).lower() not in seen:
+            seen.add(str(r).lower())
+            out.append(r)
+    return out
+
+
+def _reported_version(exe: str) -> tuple[int, ...]:
+    """What `<exe> --version` says ('2.1.63 (Claude Code)' -> (2, 1, 63)),
+    or () when it cannot be asked. Kept per path and mtime: the same binary
+    file says the same version, and an update changes the mtime."""
+    import os
+    import subprocess
+
+    try:
+        key = (exe, os.path.getmtime(exe))
+    except OSError:
+        return ()
+    if key not in _VERSIONS:
+        try:
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                                 timeout=20).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ()
+        _VERSIONS[key] = _version((out.split() or [""])[0])
+    return _VERSIONS[key]
+
+
+_VERSIONS: dict[tuple[str, float], tuple[int, ...]] = {}
+
+
+def cli_choice() -> tuple[str | None, tuple[int, ...]]:
+    """The Claude Code binary to run and its version ((), unknown).
+
+    `CLAUDE_CODE_CLI` in `.env` wins. Otherwise the newest of: the copies the
+    Claude desktop app keeps (see `_desktop_roots`) under <version>\\ --
+    directly, or (since 2.1.289) one level down in a <hash>\\ folder -- and
+    the `claude` first on PATH. (None, ()) when there is none: the SDK's own."""
+    import os
+    import shutil
     from pathlib import Path
 
     explicit = os.environ.get("CLAUDE_CODE_CLI", "").strip()
     if explicit and Path(explicit).is_file():
-        return explicit
-    root = os.environ.get("APPDATA")
-    if not root:
-        return None
-    found = [p for p in (Path(root) / "Claude" / "claude-code").glob("*/claude.exe")
-             if _version(p)]
-    return str(max(found, key=_version)) if found else None
+        return explicit, _reported_version(explicit)
+    found = [(v, str(p)) for base in _desktop_roots()
+             for p in (*base.glob("*/claude.exe"), *base.glob("*/*/claude.exe"))
+             if (v := _version(p.relative_to(base).parts[0]))]
+    if on_path := shutil.which("claude"):
+        found.append((_reported_version(on_path), on_path))
+    if not found:
+        return None, ()
+    v, p = max(found, key=lambda f: f[0])
+    return p, v
+
+
+def cli_path() -> str | None:
+    """The Claude Code binary to run, or None for the SDK's own choice."""
+    return cli_choice()[0]
 
 
 def needs_sign_in(message: str | None) -> bool:
@@ -57,13 +127,26 @@ def needs_sign_in(message: str | None) -> bool:
     return bool(message) and SIGN_IN_MESSAGE in message
 
 
+def too_old_message(cli: str | None, version: tuple[int, ...]) -> str:
+    have = ".".join(map(str, version))
+    need = ".".join(map(str, MIN_VERSION))
+    return (f"The newest Claude Code this app can find is {have} ({cli}); the models "
+            f"here need {need} or newer. Run `claude update` in a terminal, update the "
+            "Claude desktop app, or point CLAUDE_CODE_CLI in .env at a newer claude.exe.")
+
+
 def available() -> tuple[bool, str]:
-    """Whether a research run can start, and why not when it cannot."""
+    """Whether a research run can start, and why not when it cannot: no SDK,
+    or a Claude Code too old for the models -- said before a run starts,
+    not after each of its searches has been refused."""
     try:
         import claude_agent_sdk  # noqa: F401
     except ImportError:
         return False, ("claude-agent-sdk is not installed. "
                        "Run: pip install claude-agent-sdk")
+    cli, version = cli_choice()
+    if version and version < MIN_VERSION:
+        return False, too_old_message(cli, version)
     return True, ""
 
 

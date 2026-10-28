@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "meeting": {
+    "start": "2026-09-28",
+    "end": "2026-09-29",
+    "verified": true
+  },
+  "as_of": "2026-09-02",
+  "label": "September 2026",
+  "roster": [
+    {
+      "name": "Michele Bullock",
+      "role": "Governor, Chair",
+      "bloc1": "Executive",
+      "bloc2": "Executive",
+      "score1": 3.4,
+      "score2": 3.4,
+      "is_mover": false,
+      "note": "Hawkish, data-led. 29 Sep media conference: 'The Board will increase interest rates again if that's what's needed'; unemployment 'a bit tight'; hopes 4.60% is 'restrictive enough'. rba.gov.au/speeches/2026/mc-gov-2026-09-29.html"
+    },
+    {
+      "name": "Andrew Hauser",
+      "role": "Deputy Governor",
+      "bloc1": "Executive",
+      "bloc2": "Executive",
+      "score1": 3.8,
+      "score2": 3.8,
+      "is_mover": false,
+      "note": "Most hawkish on the record: inflation the economy's 'one big problem'; rates would rise 'further than otherwise' if expectations slip, 'not at that point yet' (ABC 7.30, 8 Sep 2026). rba.gov.au/speeches/2026/sp-dg-2026-09-08.html"
+    },
+    {
+      "name": "Jenny Wilkinson",
+      "role": "Secretary to the Treasury",
+      "bloc1": "Ex officio",
+      "bloc2": "Ex officio",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+    },
+    {
+      "name": "Marnie Baker",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+    },
+    {
+      "name": "Melinda Cilento",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "Joined 1 Sep 2026 (ex-CEDA CEO). Public comment on productivity and AI, none on rates; voted in the unanimous 29 Sep hike. Placed at the Board's revealed position."
+    },
+    {
+      "name": "Renée Fry-McKibbin",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+    },
+    {
+      "name": "Carolyn Hewson",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "Credibility-first: 'inflation expectations are better when anchored. Policy credibility is stronger' (speech, 27 May 2026); no rate call. rba.gov.au/speeches/2026/sp-mpb-2026-05-27.html"
+    },
+    {
+      "name": "Bruce Preston",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 3.0,
+      "score2": 3.0,
+      "is_mover": false,
+      "note": "No on-record view on rates in 2026. Placed at the Board's revealed position: the 29 Sep hike was unanimous (9-0). Imputed from the published vote, not the member."
+    },
+    {
+      "name": "Iain Ross",
+      "role": "External member",
+      "bloc1": "External",
+      "bloc2": "External",
+      "score1": 2.6,
+      "score2": 2.6,
+      "is_mover": false,
+      "note": "Least hawkish on the record: 'little evidence that a self-sustaining wage-price spiral has emerged'; labour market easing towards balance (speech, 22 Sep 2026). Still voted for the 29 Sep hike. rba.gov.au/speeches/2026/sp-mpb-2026-09-22.html"
+    }
+  ],
+  "trade": {
+    "instrument": "RBA-dated OIS",
+    "instrument_kind": "ois",
+    "direction": "hike",
+    "side": "fade",
+    "points": 17.0,
+    "size": 25.0,
+    "target_range_low": null,
+    "target_range_high": null,
+    "kelly_fraction": 0.25
+  },
+  "probability": {
+    "mode": "decomposition",
+    "p_bloc": 0.25,
+    "p_centre": 0.4,
+    "override_q": 0.1
+  },
+  "sizing": {
+    "max_drawdown": 250000.0,
+    "daily_limit": 50000.0,
+    "bets_per_year": 8,
+    "contract": "ib:2026-09",
+    "custom_dv01": null,
+    "contract_yield": null
+  },
+  "sensitivity_grid": [
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    0.25,
+    0.4
+  ],
+  "kelly_grid": [
+    0.1,
+    0.15,
+    0.2,
+    0.25
+  ],
+  "centre_grid": [
+    0.2,
+    0.3,
+    0.4,
+    0.5
+  ],
+  "path": {
+    "ladder_levels": [],
+    "stop_level": null,
+    "target_level": null,
+    "current_price": null,
+    "vol_override_bp": null,
+    "vol_uncertainty": false,
+    "mark_tier1": true,
+    "mark_tier2": false,
+    "mark_tier3": false,
+    "no_move_target_hit": 0,
+    "no_move_never_breached": 0,
+    "no_move_falsely_stopped": 0,
+    "move_target_hit": 0,
+    "move_stopped_early": 0,
+    "move_gapped_through": 0,
+    "note": ""
+  },
+  "kill_criteria": [
+    {
+      "label": "3-month BBSW/cash spread blows out",
+      "comparator": "above",
+      "threshold": 45.0,
+      "series": "BBSW_CASH_SPREAD",
+      "unit": "bp",
+      "triggered": false,
+      "note": "Bank funding stress. Widens the wedge between what you are trading and the policy rate you have a view on."
+    },
+    {
+      "label": "Cash rate trades away from target",
+      "comparator": "above",
+      "threshold": 3.0,
+      "series": "CASH_GAP_ABS",
+      "unit": "bp",
+      "triggered": false,
+      "note": "AONIA normally sits on the target under ample reserves. A persistent gap means IB is settling on something other than the rate you are forecasting."
+    },
+    {
+      "label": "3-month BBSW moves more than 25bp in a fortnight",
+      "comparator": "above",
+      "threshold": 25.0,
+      "series": "BBSW_14D_MOVE",
+      "unit": "bp",
+      "triggered": false,
+      "note": "The short end has repriced without you. Whatever your q was, it was set against a different curve."
+    },
+    {
+      "label": "Trimmed mean CPI surprises by more than 0.3pp",
+      "comparator": "manual",
+      "threshold": null,
+      "series": null,
+      "unit": "pp",
+      "triggered": false,
+      "note": "The RBA targets the trimmed mean. Quarterly, so this fires rarely and hard."
+    },
+    {
+      "label": "Unemployment rate moves 0.3pp from the RBA's forecast",
+      "comparator": "manual",
+      "threshold": null,
+      "series": null,
+      "unit": "pp",
+      "triggered": false,
+      "note": "Full employment is half the mandate. Set against the latest SMP forecast, not the last print."
+    },
+    {
+      "label": "AUD/USD moves more than 5% in a month",
+      "comparator": "manual",
+      "threshold": null,
+      "series": null,
+      "unit": "%",
+      "triggered": false,
+      "note": "A big currency move does the RBA's work for it, or undoes it. Matters more here than for a closed economy."
+    },
+    {
+      "label": "Governor or Deputy signals a change of stance",
+      "comparator": "manual",
+      "threshold": null,
+      "series": null,
+      "unit": "",
+      "triggered": false,
+      "note": "Only two voices reliably move the curve. Outside the blackout, a speech can reprice the meeting on its own."
+    }
+  ],
+  "employment": {
+    "window_start": 2000,
+    "window_end": 2020,
+    "prior_date": "2025-12-31",
+    "manual": {
+      "labour_constraint": {},
+      "job_ads": {},
+      "employment_intentions": {}
+    }
+  },
+  "structure": {
+    "spread_enabled": true,
+    "spread_note": "",
+    "far_leg_points": null,
+    "far_leg_size": 25.0,
+    "scenarios": [],
+    "calendar": [],
+    "calendar_note": "",
+    "checklist": []
+  }
+}
